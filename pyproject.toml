@@ -1,0 +1,28 @@
+[project]
+name = "trip-updogger"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "aiomqtt>=2.3",
+    "httpx>=0.28",
+    "redis[hiredis]>=5.2",
+    "shapely>=2.1.2",
+]
+
+[dependency-groups]
+dev = [
+    "commitizen",
+    "pre-commit",
+    "pytest>=9.0.2",
+]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_provider = "uv"
+update_changelog_on_bump = true
+major_version_zero = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
