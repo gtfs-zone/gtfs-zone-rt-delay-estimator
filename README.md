@@ -20,14 +20,15 @@ On startup, the service fetches GTFS feeds, parses `stop_times.txt`, and stores 
 
 ## Payload transformation
 
-The OwnTracks MQTT topic encodes the driver and trip:
+Each OwnTracks location event is decoded as follows:
 
-| OwnTracks field | Redis record field | Notes |
+| OwnTracks field | Meaning | Notes |
 |---|---|---|
-| topic `owntracks/{user}/{device}` | `driver`, `trip_id` | split from topic; `device` is used as `trip_id` |
-| `lat`, `lon`, `tst` | `lat`, `lon`, `timestamp` | passed through |
-| `cog` | `bearing` | degrees |
-| `vel` | `speed` | converted km/h → m/s, 4 decimal places |
+| topic `owntracks/{user}/{device}` | `driver`, `trip_id` | `device` is used as `trip_id` |
+| `lat`, `lon` | vehicle position | used to compute delay against scheduled stop times |
+| `tst` | timestamp | seconds since epoch; used to determine time-of-day for schedule lookup |
+| `cog` | bearing | degrees; used internally, not written to Redis |
+| `vel` | speed | km/h; used internally, not written to Redis |
 
 **Redis key:** `trip_update:{trip_id}` — written on each location update.
 
