@@ -190,13 +190,20 @@ async def process_messages(
         dt = datetime.fromtimestamp(record["timestamp"], tz=ZoneInfo(tz_name))
         seconds_since_midnight = dt.hour * 3600 + dt.minute * 60 + dt.second
 
-        delay = compute_delay(record["lat"], record["lon"], seconds_since_midnight, trip_stops)
-        if delay is None:
+        result = compute_delay(record["lat"], record["lon"], seconds_since_midnight, trip_stops)
+        if result is None:
             log.warning("Could not compute delay for trip_id=%s", trip_id)
             continue
 
+        delay, stop_sequence = result
         log.info("trip_id=%s delay=%ds", trip_id, delay)
-        await redis.set(f"trip_update:{trip_id}", json.dumps({"trip_id": trip_id, "delay": delay, "timestamp": record["timestamp"]}))
+        await redis.set(f"trip_update:{trip_id}", json.dumps({
+            "trip_id": trip_id,
+            "vehicle_id": user,
+            "timestamp": record["timestamp"],
+            "delay": delay,
+            "stop_sequence": stop_sequence,
+        }))
 
 
 async def main() -> None:

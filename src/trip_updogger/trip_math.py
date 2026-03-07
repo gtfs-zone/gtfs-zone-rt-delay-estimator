@@ -50,7 +50,7 @@ def compute_delay(
     lon: float,
     seconds_since_midnight: float,
     trip_stops: list[dict],
-) -> int | None:
+) -> tuple[int, int] | None:
     """Compute vehicle delay in seconds versus the GTFS schedule.
 
     trip_stops: list of dicts with keys stop_sequence (int), stop_lat (float),
@@ -60,8 +60,9 @@ def compute_delay(
     seconds_since_midnight: local time of the location fix expressed as seconds
     since local midnight (e.g. 8*3600 + 5*60 for 08:05:00 local).
 
-    Returns delay in seconds (positive = late, negative = early), or None if
-    there is insufficient data to compute a result.
+    Returns (delay, stop_sequence) where delay is in seconds (positive = late,
+    negative = early) and stop_sequence is the sequence number of the next stop,
+    or None if there is insufficient data to compute a result.
     """
     stops = sorted(trip_stops, key=lambda s: s["stop_sequence"])
     if len(stops) < 2:
@@ -86,4 +87,4 @@ def compute_delay(
         parse_gtfs_time(time_ahead_str) - parse_gtfs_time(time_behind_str)
     )
 
-    return round(seconds_since_midnight - scheduled)
+    return round(seconds_since_midnight - scheduled), stop_ahead["stop_sequence"]
