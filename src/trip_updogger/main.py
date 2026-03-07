@@ -4,10 +4,11 @@ import io
 import json
 import logging
 import os
-import time
 import zipfile
 from collections import defaultdict
+from datetime import datetime
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import aiomqtt
 import httpx
@@ -26,6 +27,16 @@ GTFS_FEED_URLS_ENDPOINT = os.environ.get(
 
 RECONNECT_DELAY_INITIAL = 1
 RECONNECT_DELAY_MAX = 60
+
+
+def parse_agency_timezone(csv_content: str) -> str | None:
+    """Parse agency.txt and return the agency_timezone of the first row."""
+    reader = csv.DictReader(io.StringIO(csv_content))
+    for row in reader:
+        tz = row.get("agency_timezone", "").strip()
+        if tz:
+            return tz
+    return None
 
 
 def parse_stops(csv_content: str) -> dict[str, dict]:
@@ -65,9 +76,10 @@ def parse_stop_times(csv_content: str) -> dict[str, list[dict]]:
     return dict(stop_times)
 
 
-async def load_gtfs_feeds(endpoint: str) -> dict[str, list[dict]]:
-    """Fetch feed URLs, download each zip, extract stop_times.txt, return merged stop_times by trip_id."""
+async def load_gtfs_feeds(endpoint: str) -> tuple[dict[str, list[dict]], dict[str, str]]:
+    """Fetch feed URLs, download each zip, extract stop_times.txt, return merged stop_times by trip_id and timezone by trip_id."""
     all_stop_times: dict[str, list[dict]] = {}
+    trip_timezones: dict[str, str] = {}
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(endpoint)
@@ -96,6 +108,13 @@ async def load_gtfs_feeds(endpoint: str) -> dict[str, list[dict]]:
                         if "stops.txt" in namelist
                         else None
                     )
+                    agency_timezone = (
+                        parse_agency_timezone(zf.read("agency.txt").decode("utf-8-sig"))
+                        if "agency.txt" in namelist
+                        else None
+                    )
+                    if agency_timezone is None:
+                        log.warning("No agency_timezone found in feed: %s", url)
 
                 feed_stops = parse_stops(stops_content) if stops_content else {}
                 if not feed_stops:
@@ -111,17 +130,21 @@ async def load_gtfs_feeds(endpoint: str) -> dict[str, list[dict]]:
 
                 log.info("Loaded %d trips from %s", len(feed_stop_times), url)
                 all_stop_times.update(feed_stop_times)
+                if agency_timezone:
+                    for trip_id in feed_stop_times:
+                        trip_timezones[trip_id] = agency_timezone
             except Exception as exc:
                 log.warning("Failed to load feed %s: %s", url, exc)
 
     log.info("Total trips loaded: %d", len(all_stop_times))
-    return all_stop_times
+    return all_stop_times, trip_timezones
 
 
 async def process_messages(
     client: aiomqtt.Client,
     redis: aioredis.Redis,
     stop_times: dict[str, list[dict]],
+    trip_timezones: dict[str, str],
 ) -> None:
     await client.subscribe("owntracks/+/+")
     async for message in client.messages:
@@ -160,8 +183,12 @@ async def process_messages(
             log.warning("No stop_times for trip_id=%s", trip_id)
             continue
 
-        local_t = time.localtime(record["timestamp"])
-        seconds_since_midnight = local_t.tm_hour * 3600 + local_t.tm_min * 60 + local_t.tm_sec
+        tz_name = trip_timezones.get(trip_id)
+        if tz_name is None:
+            log.warning("No timezone for trip_id=%s", trip_id)
+            continue
+        dt = datetime.fromtimestamp(record["timestamp"], tz=ZoneInfo(tz_name))
+        seconds_since_midnight = dt.hour * 3600 + dt.minute * 60 + dt.second
 
         delay = compute_delay(record["lat"], record["lon"], seconds_since_midnight, trip_stops)
         if delay is None:
@@ -179,7 +206,7 @@ async def main() -> None:
 
     redis = aioredis.from_url(REDIS_URL)
 
-    stop_times = await load_gtfs_feeds(GTFS_FEED_URLS_ENDPOINT)
+    stop_times, trip_timezones = await load_gtfs_feeds(GTFS_FEED_URLS_ENDPOINT)
 
     delay = RECONNECT_DELAY_INITIAL
 
@@ -188,7 +215,7 @@ async def main() -> None:
             async with aiomqtt.Client(hostname=host, port=port) as client:
                 log.info("Connected to MQTT broker %s:%s", host, port)
                 delay = RECONNECT_DELAY_INITIAL
-                await process_messages(client, redis, stop_times)
+                await process_messages(client, redis, stop_times, trip_timezones)
         except aiomqtt.MqttError as exc:
             log.warning("MQTT error: %s — reconnecting in %ss", exc, delay)
             await asyncio.sleep(delay)
