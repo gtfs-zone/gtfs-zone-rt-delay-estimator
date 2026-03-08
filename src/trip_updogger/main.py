@@ -1,19 +1,18 @@
 import asyncio
-import csv
-import io
 import json
 import logging
 import os
-import zipfile
 from collections import defaultdict
 from datetime import datetime
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import aiomqtt
-import httpx
 import redis.asyncio as aioredis
+from sqlalchemy import create_engine
+from sqlmodel import Session, select
 
+from trip_updogger.models import GtfsStaticFeed, GtfsStop, GtfsStopTime
 from trip_updogger.trip_math import compute_delay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -21,123 +20,53 @@ log = logging.getLogger(__name__)
 
 MQTT_BROKER = os.environ["MQTT_BROKER"]
 REDIS_URL = os.environ["REDIS_URL"]
-GTFS_FEED_URLS_ENDPOINT = os.environ.get(
-    "GTFS_FEED_URLS_ENDPOINT", "http://host.docker.internal:8000/feed_urls"
-)
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 RECONNECT_DELAY_INITIAL = 1
 RECONNECT_DELAY_MAX = 60
 
 
-def parse_agency_timezone(csv_content: str) -> str | None:
-    """Parse agency.txt and return the agency_timezone of the first row."""
-    reader = csv.DictReader(io.StringIO(csv_content))
-    for row in reader:
-        tz = row.get("agency_timezone", "").strip()
-        if tz:
-            return tz
-    return None
+def load_from_db() -> tuple[dict, dict]:
+    engine = create_engine(DATABASE_URL)
+    with Session(engine) as session:
+        rows = session.execute(
+            select(
+                GtfsStopTime.trip_id,
+                GtfsStopTime.stop_id,
+                GtfsStopTime.arrival_time,
+                GtfsStopTime.departure_time,
+                GtfsStopTime.stop_sequence,
+                GtfsStop.stop_lat,
+                GtfsStop.stop_lon,
+                GtfsStaticFeed.timezone,
+            )
+            .join(
+                GtfsStop,
+                (GtfsStop.gtfs_static_feed_id == GtfsStopTime.gtfs_static_feed_id)
+                & (GtfsStop.stop_id == GtfsStopTime.stop_id),
+            )
+            .join(GtfsStaticFeed, GtfsStaticFeed.id == GtfsStopTime.gtfs_static_feed_id)
+        ).all()
 
-
-def parse_stops(csv_content: str) -> dict[str, dict]:
-    """Parse stops.txt CSV content into a dict keyed by stop_id."""
-    stops: dict[str, dict] = {}
-    reader = csv.DictReader(io.StringIO(csv_content))
-    for row in reader:
-        stop_id = row.get("stop_id", "").strip()
-        if not stop_id:
-            continue
-        try:
-            stop_lat = float(row["stop_lat"])
-            stop_lon = float(row["stop_lon"])
-        except (KeyError, ValueError):
-            continue
-        stops[stop_id] = {"stop_id": stop_id, "stop_lat": stop_lat, "stop_lon": stop_lon}
-    return stops
-
-
-def parse_stop_times(csv_content: str) -> dict[str, list[dict]]:
-    """Parse stop_times.txt CSV content into a dict keyed by trip_id."""
     stop_times: dict[str, list[dict]] = defaultdict(list)
-    reader = csv.DictReader(io.StringIO(csv_content))
-    for row in reader:
-        arrival_time = row.get("arrival_time", "").strip() or None
-        departure_time = row.get("departure_time", "").strip() or None
-        # Never create a stop_time with null departure and arrival
-        if arrival_time is None and departure_time is None:
-            continue
-        stop_times[row["trip_id"]].append({
-            "trip_id": row["trip_id"],
-            "arrival_time": arrival_time,
-            "departure_time": departure_time,
-            "stop_id": row.get("stop_id", "").strip() or None,
-            "stop_sequence": int(row["stop_sequence"]),
-        })
-    return dict(stop_times)
-
-
-async def load_gtfs_feeds(endpoint: str) -> tuple[dict[str, list[dict]], dict[str, str]]:
-    """Fetch feed URLs, download each zip, extract stop_times.txt, return merged stop_times by trip_id and timezone by trip_id."""
-    all_stop_times: dict[str, list[dict]] = {}
     trip_timezones: dict[str, str] = {}
+    for row in rows:
+        stop_times[row.trip_id].append(
+            {
+                "trip_id": row.trip_id,
+                "stop_id": row.stop_id,
+                "arrival_time": row.arrival_time,
+                "departure_time": row.departure_time,
+                "stop_sequence": row.stop_sequence,
+                "stop_lat": row.stop_lat,
+                "stop_lon": row.stop_lon,
+            }
+        )
+        if row.timezone:
+            trip_timezones[row.trip_id] = row.timezone
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(endpoint)
-        resp.raise_for_status()
-        feed_urls: list[str] = resp.json()
-        log.info("Fetched %d feed URLs", len(feed_urls))
-
-        for url in feed_urls:
-            parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https"):
-                log.warning("Skipping URL with unsupported scheme: %s", url)
-                continue
-            try:
-                log.info("Downloading GTFS feed: %s", url)
-                feed_resp = await client.get(url, follow_redirects=True)
-                feed_resp.raise_for_status()
-
-                with zipfile.ZipFile(io.BytesIO(feed_resp.content)) as zf:
-                    namelist = zf.namelist()
-                    if "stop_times.txt" not in namelist:
-                        log.warning("No stop_times.txt in feed: %s", url)
-                        continue
-                    stop_times_content = zf.read("stop_times.txt").decode("utf-8-sig")
-                    stops_content = (
-                        zf.read("stops.txt").decode("utf-8-sig")
-                        if "stops.txt" in namelist
-                        else None
-                    )
-                    agency_timezone = (
-                        parse_agency_timezone(zf.read("agency.txt").decode("utf-8-sig"))
-                        if "agency.txt" in namelist
-                        else None
-                    )
-                    if agency_timezone is None:
-                        log.warning("No agency_timezone found in feed: %s", url)
-
-                feed_stops = parse_stops(stops_content) if stops_content else {}
-                if not feed_stops:
-                    log.warning("No stops.txt (or empty) in feed: %s", url)
-
-                feed_stop_times = parse_stop_times(stop_times_content)
-                # Merge stop coordinates into each stop_time record
-                for trip_stops in feed_stop_times.values():
-                    for st in trip_stops:
-                        stop = feed_stops.get(st["stop_id"] or "")
-                        st["stop_lat"] = stop["stop_lat"] if stop else None
-                        st["stop_lon"] = stop["stop_lon"] if stop else None
-
-                log.info("Loaded %d trips from %s", len(feed_stop_times), url)
-                all_stop_times.update(feed_stop_times)
-                if agency_timezone:
-                    for trip_id in feed_stop_times:
-                        trip_timezones[trip_id] = agency_timezone
-            except Exception as exc:
-                log.warning("Failed to load feed %s: %s", url, exc)
-
-    log.info("Total trips loaded: %d", len(all_stop_times))
-    return all_stop_times, trip_timezones
+    log.info("Loaded %d trips from DB", len(stop_times))
+    return dict(stop_times), trip_timezones
 
 
 async def process_messages(
@@ -213,7 +142,7 @@ async def main() -> None:
 
     redis = aioredis.from_url(REDIS_URL)
 
-    stop_times, trip_timezones = await load_gtfs_feeds(GTFS_FEED_URLS_ENDPOINT)
+    stop_times, trip_timezones = await asyncio.to_thread(load_from_db)
 
     delay = RECONNECT_DELAY_INITIAL
 
