@@ -13,6 +13,21 @@ class Feed(SQLModel, table=True):
     gtfs_static_feed_id: int | None = None
 
 
+class Driver(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    username: str
+    feed_id: int
+
+
+class TripAlias(SQLModel, table=True):
+    __tablename__ = "tripalias"
+
+    id: int | None = Field(default=None, primary_key=True)
+    feed_id: int
+    alias: str
+    trip_id: str
+
+
 class GtfsStop(SQLModel, table=True):
     __tablename__ = "gtfs_stop"
 

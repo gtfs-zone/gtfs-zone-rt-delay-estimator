@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-from collections import defaultdict
 from datetime import datetime
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -12,7 +11,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
-from trip_updogger.models import GtfsStaticFeed, GtfsStop, GtfsStopTime
+from trip_updogger.models import Driver, GtfsStaticFeed, GtfsStop, GtfsStopTime, TripAlias
 from trip_updogger.trip_math import compute_delay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -26,12 +25,26 @@ RECONNECT_DELAY_INITIAL = 1
 RECONNECT_DELAY_MAX = 60
 
 
-def load_from_db() -> tuple[dict, dict]:
+def query_db(user: str, alias: str) -> tuple[list[dict], str | None, str]:
     engine = create_engine(DATABASE_URL)
     with Session(engine) as session:
+        driver_row = session.execute(
+            select(Driver.feed_id).where(Driver.username == user)
+        ).first()
+        feed_id = driver_row.feed_id if driver_row else None
+
+        real_trip_id = alias
+        if feed_id is not None:
+            alias_row = session.execute(
+                select(TripAlias.trip_id)
+                .where(TripAlias.feed_id == feed_id)
+                .where(TripAlias.alias == alias)
+            ).first()
+            if alias_row:
+                real_trip_id = alias_row.trip_id
+
         rows = session.execute(
             select(
-                GtfsStopTime.trip_id,
                 GtfsStopTime.stop_id,
                 GtfsStopTime.arrival_time,
                 GtfsStopTime.departure_time,
@@ -46,35 +59,26 @@ def load_from_db() -> tuple[dict, dict]:
                 & (GtfsStop.stop_id == GtfsStopTime.stop_id),
             )
             .join(GtfsStaticFeed, GtfsStaticFeed.id == GtfsStopTime.gtfs_static_feed_id)
+            .where(GtfsStopTime.trip_id == real_trip_id)
         ).all()
 
-    stop_times: dict[str, list[dict]] = defaultdict(list)
-    trip_timezones: dict[str, str] = {}
-    for row in rows:
-        stop_times[row.trip_id].append(
-            {
-                "trip_id": row.trip_id,
-                "stop_id": row.stop_id,
-                "arrival_time": row.arrival_time,
-                "departure_time": row.departure_time,
-                "stop_sequence": row.stop_sequence,
-                "stop_lat": row.stop_lat,
-                "stop_lon": row.stop_lon,
-            }
-        )
-        if row.timezone:
-            trip_timezones[row.trip_id] = row.timezone
-
-    log.info("Loaded %d trips from DB", len(stop_times))
-    return dict(stop_times), trip_timezones
+    stop_times = [
+        {
+            "trip_id": real_trip_id,
+            "stop_id": row.stop_id,
+            "arrival_time": row.arrival_time,
+            "departure_time": row.departure_time,
+            "stop_sequence": row.stop_sequence,
+            "stop_lat": row.stop_lat,
+            "stop_lon": row.stop_lon,
+        }
+        for row in rows
+    ]
+    timezone = rows[0].timezone if rows else None
+    return stop_times, timezone, real_trip_id
 
 
-async def process_messages(
-    client: aiomqtt.Client,
-    redis: aioredis.Redis,
-    stop_times: dict[str, list[dict]],
-    trip_timezones: dict[str, str],
-) -> None:
+async def process_messages(client: aiomqtt.Client, redis: aioredis.Redis) -> None:
     await client.subscribe("owntracks/+/+")
     async for message in client.messages:
         try:
@@ -106,28 +110,31 @@ async def process_messages(
             record["lon"],
         )
 
-        trip_id = record["trip_id"]
-        trip_stops = stop_times.get(trip_id)
+        alias = device
+        trip_stops, tz_name, real_trip_id = await asyncio.to_thread(query_db, user, alias)
+        if real_trip_id != alias:
+            log.info("Resolved alias %s -> %s for user=%s", alias, real_trip_id, user)
+
         if not trip_stops:
-            log.warning("No stop_times for trip_id=%s", trip_id)
+            log.warning("No stop_times for trip_id=%s (alias=%s)", real_trip_id, alias)
             continue
 
-        tz_name = trip_timezones.get(trip_id)
         if tz_name is None:
-            log.warning("No timezone for trip_id=%s", trip_id)
+            log.warning("No timezone for trip_id=%s (alias=%s)", real_trip_id, alias)
             continue
+
         dt = datetime.fromtimestamp(record["timestamp"], tz=ZoneInfo(tz_name))
         seconds_since_midnight = dt.hour * 3600 + dt.minute * 60 + dt.second
 
         result = compute_delay(record["lat"], record["lon"], seconds_since_midnight, trip_stops)
         if result is None:
-            log.warning("Could not compute delay for trip_id=%s", trip_id)
+            log.warning("Could not compute delay for trip_id=%s (alias=%s)", real_trip_id, alias)
             continue
 
         delay, stop_sequence = result
-        log.info("trip_id=%s delay=%ds", trip_id, delay)
-        await redis.set(f"trip_update:{trip_id}", json.dumps({
-            "trip_id": trip_id,
+        log.info("trip_id=%s delay=%ds", real_trip_id, delay)
+        await redis.set(f"trip_update:{alias}", json.dumps({
+            "trip_id": real_trip_id,
             "vehicle_id": user,
             "timestamp": record["timestamp"],
             "delay": delay,
@@ -142,8 +149,6 @@ async def main() -> None:
 
     redis = aioredis.from_url(REDIS_URL)
 
-    stop_times, trip_timezones = await asyncio.to_thread(load_from_db)
-
     delay = RECONNECT_DELAY_INITIAL
 
     while True:
@@ -151,7 +156,7 @@ async def main() -> None:
             async with aiomqtt.Client(hostname=host, port=port) as client:
                 log.info("Connected to MQTT broker %s:%s", host, port)
                 delay = RECONNECT_DELAY_INITIAL
-                await process_messages(client, redis, stop_times, trip_timezones)
+                await process_messages(client, redis)
         except aiomqtt.MqttError as exc:
             log.warning("MQTT error: %s — reconnecting in %ss", exc, delay)
             await asyncio.sleep(delay)
