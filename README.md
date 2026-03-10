@@ -14,7 +14,7 @@ OwnTracks app (phone)
                             └─> redis-gtfs-rt-api (serves GTFS-RT feeds)
 ```
 
-On startup, the service fetches GTFS feeds, parses `stop_times.txt`, and stores schedule data in memory keyed by `trip_id`. It then subscribes to `owntracks/+/+`, filters for `_type=location` events, computes the current delay against the scheduled stop times, and writes a Trip Update to Redis. If the MQTT connection drops, it reconnects with exponential backoff (1s → 60s max).
+On each location event, the service queries PostgreSQL for the vehicle's stop times (resolving the MQTT device name through a `tripalias` table), computes the current delay against the schedule, and writes a Trip Update to Redis. If the MQTT connection drops, it reconnects with exponential backoff (1s → 60s max).
 
 ---
 
@@ -24,18 +24,18 @@ Each OwnTracks location event is decoded as follows:
 
 | OwnTracks field | Meaning | Notes |
 |---|---|---|
-| topic `owntracks/{user}/{device}` | `driver`, `trip_id` | `device` is used as `trip_id` |
+| topic `owntracks/{user}/{device}` | `driver`, `trip_id` | `user` maps to a `driver` row (for feed lookup); `device` is used as the alias to resolve to a real `trip_id` |
 | `lat`, `lon` | vehicle position | used to compute delay against scheduled stop times |
 | `tst` | timestamp | seconds since epoch; used to determine time-of-day for schedule lookup |
-| `cog` | bearing | degrees; used internally, not written to Redis |
-| `vel` | speed | km/h; used internally, not written to Redis |
+| `cog` | bearing | degrees; not written to Redis |
+| `vel` | speed | km/h; not written to Redis |
 
-**Redis key:** `trip_update:{trip_id}` — written on each location update.
+**Redis key:** `trip_update:{device}` — written on each location update (key uses the alias/device name).
 
 **Redis value:**
 
 ```json
-{"trip_id": "...", "delay": 42, "timestamp": 1234567890}
+{"trip_id": "...", "vehicle_id": "...", "timestamp": 1234567890, "delay": 42, "stop_sequence": 5}
 ```
 
 `delay` is in seconds (positive = late, negative = early).
@@ -48,9 +48,9 @@ Each OwnTracks location event is decoded as follows:
 |---|---|---|
 | `MQTT_BROKER` | `tcp://host.docker.internal:1883` | MQTT broker URL (tcp scheme) |
 | `REDIS_URL` | `redis://host.docker.internal:6379/1` | Redis connection URL including DB number |
-| `GTFS_FEED_URLS_ENDPOINT` | `http://host.docker.internal:8000/feed_urls` | HTTP endpoint returning JSON list of GTFS zip URLs |
+| `DATABASE_URL` | `postgresql+psycopg2://postgres:postgres@host.docker.internal:5432/postgres` | PostgreSQL connection URL |
 
-`MQTT_BROKER` and `REDIS_URL` are required — the service exits with `KeyError` if either is missing. `GTFS_FEED_URLS_ENDPOINT` defaults to `http://host.docker.internal:8000/feed_urls`.
+All three are required — the service exits with `KeyError` if any is missing.
 
 ---
 
@@ -60,15 +60,13 @@ Each OwnTracks location event is decoded as follows:
 # Install dependencies (Python 3.13, uv)
 uv sync
 
-# Install git hooks (required once per clone)
-uv run pre-commit install
-
-# Run locally (requires MQTT broker, Redis, and GTFS feed server)
+# Run locally (requires MQTT broker, Redis, and PostgreSQL with GTFS data)
 MQTT_BROKER=tcp://localhost:1883 REDIS_URL=redis://localhost:6379/1 \
+  DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/postgres \
   uv run python -m trip_updogger.main
 
-# Run bridge (MQTT broker, Redis, and GTFS feed server must be accessible at host.docker.internal)
-docker compose up --build
+# Build and push Docker image (requires clean, pushed branch)
+make push
 ```
 
 ---

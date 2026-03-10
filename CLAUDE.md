@@ -4,15 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Async Python service that bridges OwnTracks MQTT location events to GTFS-RT Trip Updates in Redis. On startup it reads GTFS schedule data from PostgreSQL and stores it in memory keyed by `trip_id`. The entire service logic lives in `src/trip_updogger/main.py`.
+Async Python service that bridges OwnTracks MQTT location events to GTFS-RT Trip Updates in Redis. The entire service logic lives in `src/trip_updogger/main.py`. SQLModel models are in `models.py`; delay math is in `trip_math.py`.
 
 ## Architecture
 
 **Flow:** OwnTracks device → MQTT broker → bridge service → Redis
 
-1. `main()` reads GTFS data from the PostgreSQL database via `load_from_db()`, then connects to MQTT and Redis with exponential backoff reconnection (1s → 60s max).
-2. `load_from_db()` queries `gtfs_stop_time` joined with `gtfs_stop` and `gtfs_static_feed`, returning a dict of `{trip_id: [stop_time_records]}` (each record includes `stop_lat`/`stop_lon`) and a `{trip_id: timezone}` dict.
-3. `process_messages()` subscribes to `owntracks/+/+`, filters for `_type=location`, computes a Trip Update from the vehicle's current position against its scheduled stop_times, then publishes to Redis.
+1. `main()` connects to MQTT and Redis with exponential backoff reconnection (1s → 60s max).
+2. `process_messages()` subscribes to `owntracks/+/+`, filters for `_type=location`, then calls `query_db()` on each message.
+3. `query_db(user, alias)` looks up the MQTT username in the `driver` table to get a `feed_id`, resolves the device name through the `tripalias` table to a real `trip_id`, then fetches stop times joined with stops and the feed timezone from PostgreSQL.
+4. `compute_delay()` in `trip_math.py` projects the vehicle position onto the stop polyline (with cos-lat scaling), interpolates the scheduled time at that point, and returns `(delay_seconds, next_stop_sequence)`.
+5. Results are written to Redis as `trip_update:{alias}` (key uses the alias, not the resolved trip_id).
 
 ## Environment Variables
 
@@ -35,9 +37,6 @@ uv sync
 # Run the service locally (requires MQTT broker, Redis, and PostgreSQL with GTFS data)
 uv run python -m trip_updogger.main
 
-# Build Docker image
-docker build -t trip-updogger .
-
-# Run bridge
-docker compose up
+# Build and push Docker image (requires clean, pushed branch)
+make push
 ```
