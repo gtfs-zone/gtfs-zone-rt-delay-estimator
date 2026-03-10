@@ -11,7 +11,7 @@ OwnTracks app (phone)
     └─> MQTT broker
             └─> trip-updogger
                     └─> Redis (trip_update:{trip_id} keys)
-                            └─> redis-gtfs-rt-api (serves GTFS-RT feeds)
+                            └─> cafe-car (serves GTFS-RT feeds)
 ```
 
 On each location event, the service queries PostgreSQL for the vehicle's stop times (resolving the MQTT device name through a `tripalias` table), computes the current delay against the schedule, and writes a Trip Update to Redis. If the MQTT connection drops, it reconnects with exponential backoff (1s → 60s max).
