@@ -8,7 +8,11 @@ dependencies = [
     "redis[hiredis]>=5.2",
     "shapely>=2.1.2",
     "sqlmodel>=0.0.21",
+    "railroad-club",
 ]
+
+[tool.uv.sources]
+railroad-club = { git = "https://git.kcfam.us/gtfs.zone/railroad-club.git" }
 
 [dependency-groups]
 dev = [

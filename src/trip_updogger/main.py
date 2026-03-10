@@ -11,7 +11,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
-from trip_updogger.models import Driver, GtfsStaticFeed, GtfsStop, GtfsStopTime, TripAlias
+from railroad_club.models import Driver, GtfsStaticFeed, GtfsStop, GtfsStopTime, TripAlias
 from trip_updogger.trip_math import compute_delay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
