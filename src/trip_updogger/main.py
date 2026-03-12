@@ -18,6 +18,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 MQTT_BROKER = os.environ["MQTT_BROKER"]
+MQTT_USERNAME = os.environ.get("MQTT_USERNAME")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD")
 REDIS_URL = os.environ["REDIS_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -153,7 +155,7 @@ async def main() -> None:
 
     while True:
         try:
-            async with aiomqtt.Client(hostname=host, port=port) as client:
+            async with aiomqtt.Client(hostname=host, port=port, username=MQTT_USERNAME, password=MQTT_PASSWORD) as client:
                 log.info("Connected to MQTT broker %s:%s", host, port)
                 delay = RECONNECT_DELAY_INITIAL
                 await process_messages(client, redis)
