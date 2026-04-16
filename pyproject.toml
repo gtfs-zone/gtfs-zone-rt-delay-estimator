@@ -2,6 +2,7 @@
 name = "trip-updogger"
 version = "0.1.0"
 requires-python = ">=3.13"
+description = "Async worker that bridges OwnTracks MQTT location events to GTFS-RT Trip Updates in Redis"
 dependencies = [
     "aiomqtt>=2.3",
     "psycopg2-binary>=2.9",
@@ -19,7 +20,25 @@ dev = [
     "commitizen",
     "pre-commit",
     "pytest>=9.0.2",
+    "ruff",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trip_updogger"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "TCH", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/trip_updogger/__init__.py" = ["F401"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
@@ -27,7 +46,3 @@ tag_format = "v$version"
 version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"

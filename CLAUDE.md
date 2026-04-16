@@ -40,3 +40,7 @@ uv run python -m trip_updogger.main
 # Build and push Docker image (requires clean, pushed branch)
 make push
 ```
+
+## Rules
+
+- Never add Co-Authored-By trailers to commit messages.
