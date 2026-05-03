@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
 from railroad_club.models import Driver, GtfsStaticFeed, GtfsStop, GtfsStopTime, TripAlias
+from railroad_club.trip_resolver import resolve_driver_trip
 from trip_updogger.trip_math import compute_delay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -30,6 +31,13 @@ RECONNECT_DELAY_MAX = 60
 def query_db(user: str, alias: str) -> tuple[list[dict], str | None, str]:
     engine = create_engine(DATABASE_URL)
     with Session(engine) as session:
+        if alias == "auto":
+            resolved = resolve_driver_trip(user, session)
+            if resolved is None:
+                log.warning("No active rule for driver=%s (device=auto)", user)
+                return [], None, "auto"
+            alias = resolved
+
         driver_row = session.execute(
             select(Driver.feed_id).where(Driver.username == user)
         ).first()
@@ -135,7 +143,8 @@ async def process_messages(client: aiomqtt.Client, redis: aioredis.Redis) -> Non
 
         delay, stop_sequence = result
         log.info("trip_id=%s delay=%ds", real_trip_id, delay)
-        await redis.set(f"trip_update:{alias}", json.dumps({
+        trip_key = real_trip_id if device == "auto" else alias
+        await redis.set(f"trip_update:{trip_key}", json.dumps({
             "trip_id": real_trip_id,
             "vehicle_id": user,
             "timestamp": record["timestamp"],
