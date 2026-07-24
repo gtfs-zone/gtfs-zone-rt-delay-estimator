@@ -3,56 +3,46 @@ import json
 import logging
 import os
 from datetime import datetime
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-import aiomqtt
 import redis.asyncio as aioredis
+from railroad_club.models import (
+    GtfsStaticFeed,
+    GtfsStop,
+    GtfsStopTime,
+)
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
-from railroad_club.models import Driver, GtfsStaticFeed, GtfsStop, GtfsStopTime, TripAlias
-from railroad_club.trip_resolver import resolve_driver_trip
 from trip_updogger.trip_math import compute_delay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-MQTT_BROKER = os.environ["MQTT_BROKER"]
-MQTT_USERNAME = os.environ.get("MQTT_USERNAME")
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD")
 REDIS_URL = os.environ["REDIS_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
+# How often to sweep the live vehicle:* positions for new fixes.
+POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 
-RECONNECT_DELAY_INITIAL = 1
-RECONNECT_DELAY_MAX = 60
+# Match cafe-car's ingest TRIP_UPDATE_TTL so stale predictions expire together.
+TRIP_UPDATE_TTL = 300
+
+# Stamped on every record we write so we never overwrite a richer producer's
+# trip_update (e.g. hell-gate-bridge's per-stop prediction) — only our own.
+SOURCE = "trip-updogger"
+
+_engine = create_engine(DATABASE_URL)
 
 
-def query_db(user: str, alias: str) -> tuple[list[dict], str | None, str]:
-    engine = create_engine(DATABASE_URL)
-    with Session(engine) as session:
-        if alias == "auto":
-            resolved = resolve_driver_trip(user, session)
-            if resolved is None:
-                log.warning("No active rule for driver=%s (device=auto)", user)
-                return [], None, "auto"
-            alias = resolved
+def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
+    """Load the scheduled stop_times (with coords) and feed timezone for a trip.
 
-        driver_row = session.execute(
-            select(Driver.feed_id).where(Driver.username == user)
-        ).first()
-        feed_id = driver_row.feed_id if driver_row else None
-
-        real_trip_id = alias
-        if feed_id is not None:
-            alias_row = session.execute(
-                select(TripAlias.trip_id)
-                .where(TripAlias.feed_id == feed_id)
-                .where(TripAlias.alias == alias)
-            ).first()
-            if alias_row:
-                real_trip_id = alias_row.trip_id
-
+    Unlike the old OwnTracks/HTTP shim, the position record already carries the
+    resolved ``trip_id`` (vehicle-poser resolves it from the schedule; hell-gate
+    supplies it directly), so there is nothing to resolve here — we only fetch the
+    schedule needed to project the fix onto the route and compute the delay.
+    """
+    with Session(_engine) as session:
         rows = session.execute(
             select(
                 GtfsStopTime.stop_id,
@@ -69,12 +59,12 @@ def query_db(user: str, alias: str) -> tuple[list[dict], str | None, str]:
                 & (GtfsStop.stop_id == GtfsStopTime.stop_id),
             )
             .join(GtfsStaticFeed, GtfsStaticFeed.id == GtfsStopTime.gtfs_static_feed_id)
-            .where(GtfsStopTime.trip_id == real_trip_id)
+            .where(GtfsStopTime.trip_id == trip_id)
         ).all()
 
     stop_times = [
         {
-            "trip_id": real_trip_id,
+            "trip_id": trip_id,
             "stop_id": row.stop_id,
             "arrival_time": row.arrival_time,
             "departure_time": row.departure_time,
@@ -85,99 +75,115 @@ def query_db(user: str, alias: str) -> tuple[list[dict], str | None, str]:
         for row in rows
     ]
     timezone = rows[0].timezone if rows else None
-    return stop_times, timezone, real_trip_id
+    return stop_times, timezone
 
 
-async def process_messages(client: aiomqtt.Client, redis: aioredis.Redis) -> None:
-    await client.subscribe("owntracks/+/+")
-    async for message in client.messages:
-        try:
-            payload = json.loads(message.payload)
-        except (json.JSONDecodeError, ValueError):
-            log.warning("Failed to decode JSON from topic %s", message.topic)
-            continue
-
-        if payload.get("_type") != "location":
-            continue
-
-        parts = str(message.topic).split("/")
-        user = parts[1]
-        device = parts[2]
-        record = {
-            "driver": user,
-            "trip_id": device,
-            "lat": payload.get("lat"),
-            "lon": payload.get("lon"),
-            "bearing": payload.get("cog"),
-            "speed": round(payload["vel"] / 3.6, 4) if payload.get("vel") is not None else None,
-            "timestamp": payload.get("tst"),
-        }
-        log.info(
-            "Received location update user=%s trip_id=%s lat=%s lon=%s",
-            user,
-            device,
-            record["lat"],
-            record["lon"],
-        )
-
-        alias = device
-        trip_stops, tz_name, real_trip_id = await asyncio.to_thread(query_db, user, alias)
-        if real_trip_id != alias:
-            log.info("Resolved alias %s -> %s for user=%s", alias, real_trip_id, user)
-
-        if not trip_stops:
-            log.warning("No stop_times for trip_id=%s (alias=%s)", real_trip_id, alias)
-            continue
-
-        if tz_name is None:
-            log.warning("No timezone for trip_id=%s (alias=%s)", real_trip_id, alias)
-            continue
-
-        dt = datetime.fromtimestamp(record["timestamp"], tz=ZoneInfo(tz_name))
-        seconds_since_midnight = dt.hour * 3600 + dt.minute * 60 + dt.second
-
-        result = compute_delay(record["lat"], record["lon"], seconds_since_midnight, trip_stops)
-        if result is None:
-            log.warning("Could not compute delay for trip_id=%s (alias=%s)", real_trip_id, alias)
-            continue
-
-        delay, stop_sequence = result
-        log.info("trip_id=%s delay=%ds", real_trip_id, delay)
-        trip_key = real_trip_id if device == "auto" else alias
-        await redis.set(f"trip_update:{trip_key}", json.dumps({
-            "trip_id": real_trip_id,
-            "vehicle_id": user,
-            "timestamp": record["timestamp"],
-            "delay": delay,
-            "stop_sequence": stop_sequence,
-        }))
+def _trip_update_key(trip_id: str, start_date: str | None) -> str:
+    """Match cafe-car's ingest key scheme so gtfs_rt.py finds our prediction."""
+    if start_date:
+        return f"trip_update:{trip_id}:{start_date}"
+    return f"trip_update:{trip_id}"
 
 
-async def main() -> None:
-    parsed = urlparse(MQTT_BROKER)
-    host = parsed.hostname
-    port = parsed.port or 1883
+async def _should_write(redis: aioredis.Redis, key: str) -> bool:
+    """Only write when the slot is empty or already ours.
 
+    Any trip_update from a different producer (hell-gate-bridge's richer per-stop
+    prediction) is left untouched. Keying off our own SOURCE stamp — rather than
+    the mere absence of stop_time_updates — is race-safe: once a richer producer
+    owns the key we defer for the record's lifetime instead of flip-flopping with
+    it every poll."""
+    existing = await redis.get(key)
+    if existing is None:
+        return True
+    try:
+        data = json.loads(existing)
+    except (ValueError, TypeError):
+        return True
+    return data.get("source") == SOURCE
+
+
+async def process_position(redis: aioredis.Redis, record: dict) -> None:
+    trip_id = record.get("trip_id")
+    lat = record.get("lat")
+    lon = record.get("lon")
+    timestamp = record.get("timestamp")
+    if not trip_id or lat is None or lon is None or timestamp is None:
+        return
+
+    stop_times, tz_name = await asyncio.to_thread(load_stop_times, trip_id)
+    if not stop_times:
+        return
+    if tz_name is None:
+        log.warning("No timezone for trip_id=%s", trip_id)
+        return
+
+    dt = datetime.fromtimestamp(int(timestamp), tz=ZoneInfo(tz_name))
+    seconds_since_midnight = dt.hour * 3600 + dt.minute * 60 + dt.second
+
+    result = compute_delay(lat, lon, seconds_since_midnight, stop_times)
+    if result is None:
+        return
+    delay, stop_sequence = result
+
+    start_date = record.get("start_date")
+    key = _trip_update_key(trip_id, start_date)
+    if not await _should_write(redis, key):
+        return
+
+    log.info("trip_id=%s delay=%ds seq=%s", trip_id, delay, stop_sequence)
+    await redis.setex(
+        key,
+        TRIP_UPDATE_TTL,
+        json.dumps(
+            {
+                "trip_id": trip_id,
+                # tracker_id is internal only; the feed labels by nickname.
+                "vehicle_id": record.get("tracker_id"),
+                "timestamp": int(timestamp),
+                "delay": delay,
+                "stop_sequence": stop_sequence,
+                "source": SOURCE,
+            }
+        ),
+    )
+
+
+async def run() -> None:
     redis = aioredis.from_url(REDIS_URL)
+    # Only recompute a key when its fix timestamp advances — avoids reprocessing
+    # the same position every sweep.
+    seen: dict[str, int] = {}
+    log.info("trip-updogger watching vehicle:* every %.1fs", POLL_INTERVAL)
+    try:
+        while True:
+            async for key in redis.scan_iter("vehicle:*"):
+                raw = await redis.get(key)
+                if raw is None:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (ValueError, TypeError):
+                    continue
+                ts = record.get("timestamp")
+                if ts is None:
+                    continue
+                key_str = key.decode() if isinstance(key, bytes) else key
+                if seen.get(key_str) == int(ts):
+                    continue
+                seen[key_str] = int(ts)
+                try:
+                    await process_position(redis, record)
+                except Exception:
+                    log.exception("Failed to process %s", key_str)
+            await asyncio.sleep(POLL_INTERVAL)
+    finally:
+        await redis.aclose()
 
-    delay = RECONNECT_DELAY_INITIAL
 
-    while True:
-        try:
-            async with aiomqtt.Client(hostname=host, port=port, username=MQTT_USERNAME, password=MQTT_PASSWORD) as client:
-                log.info("Connected to MQTT broker %s:%s", host, port)
-                delay = RECONNECT_DELAY_INITIAL
-                await process_messages(client, redis)
-        except aiomqtt.MqttError as exc:
-            log.warning("MQTT error: %s — reconnecting in %ss", exc, delay)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, RECONNECT_DELAY_MAX)
-        except asyncio.CancelledError:
-            log.info("Shutting down")
-            break
-
-    await redis.aclose()
+def main() -> None:
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

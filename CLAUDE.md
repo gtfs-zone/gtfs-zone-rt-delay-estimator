@@ -4,27 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Async Python service that bridges OwnTracks MQTT location events to GTFS-RT Trip Updates in Redis. The entire service logic lives in `src/trip_updogger/main.py`. SQLModel models are in `models.py`; delay math is in `trip_math.py`.
+Async Python worker that turns the live `vehicle:*` positions already in Redis into GTFS-RT Trip
+Updates (also in Redis). The entire worker logic lives in `src/trip_updogger/main.py`; SQLModel models
+come from the shared `railroad_club` package; delay math is in `trip_math.py`.
 
 ## Architecture
 
-**Flow:** OwnTracks device → MQTT broker → bridge service → Redis
+**Flow:** vehicle-poser / cafe-car `/ingest` → `vehicle:*` (Redis) → this worker → `trip_update:*` (Redis) → cafe-car
 
-1. `main()` connects to MQTT and Redis with exponential backoff reconnection (1s → 60s max).
-2. `process_messages()` subscribes to `owntracks/+/+`, filters for `_type=location`, then calls `query_db()` on each message.
-3. `query_db(user, alias)` looks up the MQTT username in the `driver` table to get a `feed_id`, resolves the device name through the `tripalias` table to a real `trip_id`, then fetches stop times joined with stops and the feed timezone from PostgreSQL.
-4. `compute_delay()` in `trip_math.py` projects the vehicle position onto the stop polyline (with cos-lat scaling), interpolates the scheduled time at that point, and returns `(delay_seconds, next_stop_sequence)`.
-5. Results are written to Redis as `trip_update:{alias}` (key uses the alias, not the resolved trip_id).
+1. `run()` opens Redis and loops forever, sweeping `vehicle:*` keys every `POLL_INTERVAL` seconds. An
+   in-memory `{key: timestamp}` map skips positions whose fix time hasn't advanced.
+2. Each position record already carries a resolved `trip_id` (vehicle-poser resolves it from the
+   schedule rules; hell-gate-bridge supplies it directly), so the worker does **not** re-resolve it.
+3. `load_stop_times(trip_id)` fetches the trip's scheduled stop times (joined with stops) and the feed
+   timezone from PostgreSQL.
+4. `compute_delay()` in `trip_math.py` projects the vehicle position onto the stop polyline (with
+   cos-lat scaling), interpolates the scheduled time at that point, and returns `(delay_seconds,
+   next_stop_sequence)`.
+5. Results are written to Redis as `trip_update:{trip_id}` (or `:{start_date}` when present) with a
+   300-second TTL — the key cafe-car reads. A **collision guard** skips the write when a richer per-stop
+   `trip_update` (hell-gate-bridge's) already exists for that trip.
+
+The `tracker_id` in a position record is the tracker's **secret** id; it is never written into a feed.
+cafe-car labels vehicles by the tracker's `nickname`.
 
 ## Environment Variables
 
 | Variable | Example | Description |
 |---|---|---|
-| `MQTT_BROKER` | `tcp://host.docker.internal:1883` | MQTT broker URL (tcp scheme, host, port) |
-| `REDIS_URL` | `redis://host.docker.internal:6379/1` | Redis connection URL including DB number |
-| `DATABASE_URL` | `postgresql+psycopg2://postgres:postgres@host.docker.internal:5432/postgres` | PostgreSQL connection URL |
+| `REDIS_URL` | `redis://redis:6379/1` | Redis connection URL including DB number |
+| `DATABASE_URL` | `postgresql+psycopg2://.../postgres` | PostgreSQL connection URL |
+| `POLL_INTERVAL` | `5` | Seconds between sweeps of the `vehicle:*` keyspace (default `5`) |
 
-All three are required — the service exits with `KeyError` if any is missing.
+`REDIS_URL` and `DATABASE_URL` are required — the worker exits with `KeyError` if either is missing.
 
 ## Development
 
@@ -34,7 +46,7 @@ Dependencies are managed with `uv` (Python 3.13).
 # Install dependencies
 uv sync
 
-# Run the service locally (requires MQTT broker, Redis, and PostgreSQL with GTFS data)
+# Run the worker locally (requires Redis with vehicle:* keys and PostgreSQL with GTFS data)
 uv run python -m trip_updogger.main
 
 # Build and push Docker image (requires clean, pushed branch)

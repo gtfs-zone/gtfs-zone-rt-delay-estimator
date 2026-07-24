@@ -2,9 +2,8 @@
 name = "trip-updogger"
 version = "0.1.0"
 requires-python = ">=3.13"
-description = "Async worker that bridges OwnTracks MQTT location events to GTFS-RT Trip Updates in Redis"
+description = "Redis worker that turns live vehicle positions into GTFS-RT Trip Updates"
 dependencies = [
-    "aiomqtt>=2.3",
     "psycopg2-binary>=2.9",
     "redis[hiredis]>=5.2",
     "shapely>=2.1.2",
