@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
@@ -14,7 +13,11 @@ from railroad_club.models import (
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
-from trip_updogger.trip_math import compute_delay
+from trip_updogger.trip_math import (
+    build_stop_time_updates,
+    compute_progress,
+    service_day_base,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -127,15 +130,29 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
         log.warning("No timezone for trip_id=%s", trip_id)
         return
 
-    dt = datetime.fromtimestamp(int(timestamp), tz=ZoneInfo(tz_name))
-    seconds_since_midnight = dt.hour * 3600 + dt.minute * 60 + dt.second
+    # GTFS schedule times are offsets from the *service day's* midnight and may
+    # run past 24:00, so the fix's own calendar date is not always the right base.
+    fix_epoch = int(timestamp)
+    base = service_day_base(fix_epoch, ZoneInfo(tz_name), stop_times)
 
-    result = compute_delay(lat, lon, seconds_since_midnight, stop_times)
-    if result is None:
+    progress = compute_progress(lat, lon, fix_epoch - base, stop_times)
+    if progress is None:
         return
-    delay, stop_sequence = result
+    delay, next_index, stops = progress
+    stop_sequence = stops[next_index]["stop_sequence"]
 
-    log.info("trip_id=%s delay=%ds seq=%s", trip_id, delay, stop_sequence)
+    # A per-stop prediction list with absolute times, not a bare delay: a consumer
+    # cannot order a trip's stops from delays alone, so an untimed update tells it
+    # nothing about where the vehicle is.
+    stop_time_updates = build_stop_time_updates(stops, next_index, base, delay)
+
+    log.info(
+        "trip_id=%s delay=%ds seq=%s stops=%d",
+        trip_id,
+        delay,
+        stop_sequence,
+        len(stop_time_updates),
+    )
     payload = {
         "trip_id": trip_id,
         # The secret credential, under its own name — never the vehicle id.
@@ -143,7 +160,12 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
         # VehicleDescriptor.id, so writing the tracker id there would both leak
         # the credential and collapse every trip we own onto one id.
         "tracker_id": record.get("tracker_id"),
-        "timestamp": int(timestamp),
+        "timestamp": fix_epoch,
+        "stop_time_updates": stop_time_updates,
+        # Advisory duplicates of the head of the prediction list. cafe-car reads
+        # stop_time_updates whenever it is non-empty, so these are only for making
+        # a `redis-cli GET trip_update:...` legible — and for the back-compat path
+        # should an old flat record still be live under its TTL.
         "delay": delay,
         "stop_sequence": stop_sequence,
         "source": SOURCE,

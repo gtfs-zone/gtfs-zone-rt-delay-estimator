@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Async Python worker that turns the live `vehicle:*` positions already in Redis into GTFS-RT Trip
 Updates (also in Redis). The entire worker logic lives in `src/trip_updogger/main.py`; SQLModel models
-come from the shared `railroad_club` package; delay math is in `trip_math.py`.
+come from the shared `railroad_club` package; the schedule/geometry math is in `trip_math.py`.
 
 ## Architecture
 
@@ -18,12 +18,26 @@ come from the shared `railroad_club` package; delay math is in `trip_math.py`.
    schedule rules; hell-gate-bridge supplies it directly), so the worker does **not** re-resolve it.
 3. `load_stop_times(trip_id)` fetches the trip's scheduled stop times (joined with stops) and the feed
    timezone from PostgreSQL.
-4. `compute_delay()` in `trip_math.py` projects the vehicle position onto the stop polyline (with
-   cos-lat scaling), interpolates the scheduled time at that point, and returns `(delay_seconds,
-   next_stop_sequence)`.
-5. Results are written to Redis as `trip_update:{trip_id}` (or `:{start_date}` when present) with a
-   300-second TTL — the key cafe-car reads. A **collision guard** skips the write when a richer per-stop
-   `trip_update` (hell-gate-bridge's) already exists for that trip.
+4. `service_day_base()` picks the local midnight the trip's schedule is measured from. GTFS times run
+   past `24:00:00`, so a 01:00 fix on a 23:00–25:30 trip belongs to *yesterday's* service day; taking
+   the fix's own calendar date there would report the vehicle a full day early.
+5. `compute_progress()` in `trip_math.py` projects the vehicle position onto the stop polyline (with
+   cos-lat scaling), interpolates the scheduled time at that point, and returns the delay, the index of
+   the stop ahead, and the sorted stops.
+6. `build_stop_time_updates()` turns that into a prediction for every stop from the one ahead to the end
+   of the trip, each with an **absolute epoch** arrival/departure (`service day midnight + scheduled +
+   delay`) alongside the delay. The vehicle is assumed to hold its current lateness for the rest of the
+   trip — with no dwell or running-time model that constant-delay propagation is the only honest option.
+7. Results are written to Redis as `trip_update:{trip_id}` (or `:{start_date}` when present) with a
+   300-second TTL — the key cafe-car reads. A **collision guard** (`_should_write`) skips the write
+   unless the slot is empty or already carries our own `source` stamp, so a richer producer's record
+   (hell-gate-bridge's) is never clobbered.
+
+**Why the times matter:** an update carrying only a delay is unusable to a consumer trying to work out
+*where* a vehicle is. Vehicles from the Traccar path have no `current_stop_sequence` and no `stop_id`
+(vehicle-poser doesn't compute them), so a consumer's only remaining option is to infer the current stop
+from the trip's soonest still-future prediction — which requires the prediction to have a time. Emitting
+delay alone is what left those vehicles unplaceable.
 
 The `tracker_id` in a position record is the tracker's **secret** id; it is never written into a feed.
 cafe-car labels vehicles by the tracker's `nickname`.
