@@ -132,21 +132,27 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
         return
 
     log.info("trip_id=%s delay=%ds seq=%s", trip_id, delay, stop_sequence)
-    await redis.setex(
-        key,
-        TRIP_UPDATE_TTL,
-        json.dumps(
-            {
-                "trip_id": trip_id,
-                # tracker_id is internal only; the feed labels by nickname.
-                "vehicle_id": record.get("tracker_id"),
-                "timestamp": int(timestamp),
-                "delay": delay,
-                "stop_sequence": stop_sequence,
-                "source": SOURCE,
-            }
-        ),
-    )
+    payload = {
+        "trip_id": trip_id,
+        # The secret credential, under its own name — never the vehicle id.
+        # cafe-car publishes a trip update's `vehicle_id` verbatim as the GTFS
+        # VehicleDescriptor.id, so writing the tracker id there would both leak
+        # the credential and collapse every trip we own onto one id.
+        "tracker_id": record.get("tracker_id"),
+        "timestamp": int(timestamp),
+        "delay": delay,
+        "stop_sequence": stop_sequence,
+        "source": SOURCE,
+    }
+    # Carry the position record's public identity across so the trip update
+    # names the same vehicle its position does. Omit rather than write None: an
+    # absent key is what tells cafe-car to fall back to the tracker nickname,
+    # which is right for single-device producers (vehicle-poser sets neither).
+    for field in ("vehicle_id", "vehicle_label"):
+        if record.get(field):
+            payload[field] = record[field]
+
+    await redis.setex(key, TRIP_UPDATE_TTL, json.dumps(payload))
 
 
 async def run() -> None:
