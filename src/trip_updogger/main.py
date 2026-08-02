@@ -111,6 +111,15 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     if not trip_id or lat is None or lon is None or timestamp is None:
         return
 
+    # Check ownership before doing any work. Both halves of the key come
+    # straight off the record, so this costs one Redis GET and saves a Postgres
+    # round-trip per position we were only going to discard — the common case
+    # for a producer like hell-gate-bridge, whose ~53 concurrent Amtrak vehicles
+    # all share one credential and already own their trip_update keys.
+    key = _trip_update_key(trip_id, record.get("start_date"))
+    if not await _should_write(redis, key):
+        return
+
     stop_times, tz_name = await asyncio.to_thread(load_stop_times, trip_id)
     if not stop_times:
         return
@@ -125,11 +134,6 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     if result is None:
         return
     delay, stop_sequence = result
-
-    start_date = record.get("start_date")
-    key = _trip_update_key(trip_id, start_date)
-    if not await _should_write(redis, key):
-        return
 
     log.info("trip_id=%s delay=%ds seq=%s", trip_id, delay, stop_sequence)
     payload = {
