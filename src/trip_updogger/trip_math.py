@@ -32,7 +32,7 @@ def service_day_base(fix_epoch: int, tz: tzinfo, trip_stops: list[dict]) -> int:
 
     Try today's midnight, then yesterday's, and take the first whose offset lands
     inside the trip's scheduled span (plus slack). Falls back to today's midnight
-    when neither fits — better a base than no prediction at all.
+    when neither fits (better a base than no prediction at all).
     """
     local = datetime.fromtimestamp(fix_epoch, tz=tz)
     scheduled = [parse_gtfs_time(t) for t in (_scheduled(s) for s in trip_stops) if t]
@@ -155,13 +155,13 @@ def build_stop_time_updates(
 ) -> list[dict]:
     """Predictions for every stop from `next_index` onward.
 
-    Stops already passed get no entry — GTFS-RT consumers read a StopTimeUpdate as
+    Stops already passed get no entry. GTFS-RT consumers read a StopTimeUpdate as
     a prediction, and there is nothing left to predict about a stop behind us.
 
     The vehicle is assumed to hold its current lateness for the rest of the trip:
     every downstream stop is scheduled-plus-`delay`. Without dwell or running-time
     estimates that constant-delay model is the only honest one available, and it
-    is what makes the prediction *timed* — a delay alone gives a consumer no way
+    is what makes the prediction *timed*. A delay alone gives a consumer no way
     to order the trip's stops, which is exactly why these updates were unusable
     before.
 

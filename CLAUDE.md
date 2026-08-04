@@ -27,16 +27,16 @@ come from the shared `railroad_club` package; the schedule/geometry math is in `
 6. `build_stop_time_updates()` turns that into a prediction for every stop from the one ahead to the end
    of the trip, each with an **absolute epoch** arrival/departure (`service day midnight + scheduled +
    delay`) alongside the delay. The vehicle is assumed to hold its current lateness for the rest of the
-   trip — with no dwell or running-time model that constant-delay propagation is the only honest option.
+   trip. With no dwell or running-time model, constant-delay propagation is the only honest option.
 7. Results are written to Redis as `trip_update:{trip_id}` (or `:{start_date}` when present) with a
-   300-second TTL — the key cafe-car reads. A **collision guard** (`_should_write`) skips the write
+   300-second TTL, the key cafe-car reads. A **collision guard** (`_should_write`) skips the write
    unless the slot is empty or already carries our own `source` stamp, so a richer producer's record
    (hell-gate-bridge's) is never clobbered.
 
 **Why the times matter:** an update carrying only a delay is unusable to a consumer trying to work out
 *where* a vehicle is. Vehicles from the Traccar path have no `current_stop_sequence` and no `stop_id`
 (vehicle-poser doesn't compute them), so a consumer's only remaining option is to infer the current stop
-from the trip's soonest still-future prediction — which requires the prediction to have a time. Emitting
+from the trip's soonest still-future prediction, which requires the prediction to have a time. Emitting
 delay alone is what left those vehicles unplaceable.
 
 The `tracker_id` in a position record is the tracker's **secret** id; it is never written into a feed.
@@ -50,7 +50,7 @@ cafe-car labels vehicles by the tracker's `nickname`.
 | `DATABASE_URL` | `postgresql+psycopg2://.../postgres` | PostgreSQL connection URL |
 | `POLL_INTERVAL` | `5` | Seconds between sweeps of the `vehicle:*` keyspace (default `5`) |
 
-`REDIS_URL` and `DATABASE_URL` are required — the worker exits with `KeyError` if either is missing.
+`REDIS_URL` and `DATABASE_URL` are required. The worker exits with `KeyError` if either is missing.
 
 ## Development
 

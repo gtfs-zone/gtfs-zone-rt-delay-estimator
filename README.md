@@ -27,13 +27,13 @@ The prediction covers **every stop from the one ahead to the end of the trip**, 
 epoch arrival/departure time as well as a delay. The vehicle is assumed to hold its current lateness for
 the rest of the trip; without dwell or running-time estimates that constant-delay model is the only
 honest one available. The absolute times are the point: a consumer cannot order a trip's stops from
-delays alone, so an untimed update says nothing about where the vehicle is — and vehicles from the
+delays alone, so an untimed update says nothing about where the vehicle is, and vehicles from the
 Traccar path carry no `current_stop_sequence` or `stop_id` for it to fall back on.
 
 Schedule times are resolved against the **service day**, not the fix's calendar date. GTFS times run
 past `24:00:00`, so a 01:00 fix on a trip scheduled 23:00–25:30 belongs to the previous day's run.
 
-The `trip_id` is taken straight from the position record — vehicle-poser resolves it from the schedule
+The `trip_id` is taken straight from the position record. Vehicle-poser resolves it from the schedule
 rules and hell-gate supplies it directly, so this worker never re-resolves it.
 
 **Collision guard:** the worker writes only when the `trip_update:*` slot is empty or already carries
@@ -73,13 +73,13 @@ the tracker's `nickname`.
 }
 ```
 
-`stop_time_updates` is the payload — one entry per stop from the one ahead to the end of the trip, with
+`stop_time_updates` is the payload, one entry per stop from the one ahead to the end of the trip, with
 absolute epoch times. Its field names match cafe-car's ingest contract, the same one hell-gate-bridge
 writes. Top-level `delay` and `stop_sequence` duplicate the head of that list; they are advisory, kept
 so a `redis-cli GET` stays readable, and cafe-car reads the list whenever it is non-empty.
 
 `delay` is in seconds (positive = late, negative = early). `tracker_id` is the device's **secret**
-credential, held for internal reference only — it is never published. cafe-car labels the vehicle in the
+credential, held for internal reference only. It is never published. cafe-car labels the vehicle in the
 public feed by the producer's `vehicle_id` if the position record carried one, else the tracker's
 `nickname`.
 
@@ -93,7 +93,7 @@ public feed by the producer's `vehicle_id` if the position record carried one, e
 | `DATABASE_URL` | `postgresql+psycopg2://.../postgres` | PostgreSQL connection URL |
 | `POLL_INTERVAL` | `5` | Seconds between sweeps of the `vehicle:*` keyspace (default `5`) |
 
-`REDIS_URL` and `DATABASE_URL` are required — the worker exits with `KeyError` if either is missing.
+`REDIS_URL` and `DATABASE_URL` are required. The worker exits with `KeyError` if either is missing.
 
 ---
 

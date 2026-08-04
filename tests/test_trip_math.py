@@ -124,14 +124,14 @@ def test_compute_progress_early():
 
 
 def test_compute_progress_at_first_stop():
-    # At stop 0 exactly — scheduled time = departure of stop 0 = 28800
+    # At stop 0 exactly, scheduled time = departure of stop 0 = 28800
     stops = _stops("08:00:00", "08:10:00")
     progress = compute_progress(45.0, -73.0, 8 * 3600, stops)
     assert progress.delay == 0
 
 
 def test_compute_progress_at_last_stop():
-    # At stop 1 exactly — scheduled time = arrival of stop 1 = 29400
+    # At stop 1 exactly, scheduled time = arrival of stop 1 = 29400
     stops = _stops("08:00:00", "08:10:00")
     progress = compute_progress(45.1, -73.0, 8 * 3600 + 10 * 60, stops)
     assert progress.delay == 0
@@ -192,7 +192,7 @@ def test_compute_progress_missing_time_returns_none():
 
 
 def test_compute_progress_unsorted_stop_sequence():
-    # Stops provided out of order — should still work
+    # Stops provided out of order, should still work
     stops = [
         {"stop_sequence": 2, "stop_lat": 45.1, "stop_lon": -73.0,
          "arrival_time": "08:10:00", "departure_time": "08:10:00"},

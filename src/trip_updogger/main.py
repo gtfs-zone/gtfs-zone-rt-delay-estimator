@@ -31,7 +31,7 @@ POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 TRIP_UPDATE_TTL = 300
 
 # Stamped on every record we write so we never overwrite a richer producer's
-# trip_update (e.g. hell-gate-bridge's per-stop prediction) — only our own.
+# trip_update (e.g. hell-gate-bridge's per-stop prediction), only our own.
 SOURCE = "trip-updogger"
 
 _engine = create_engine(DATABASE_URL)
@@ -42,7 +42,7 @@ def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
 
     Unlike the old OwnTracks/HTTP shim, the position record already carries the
     resolved ``trip_id`` (vehicle-poser resolves it from the schedule; hell-gate
-    supplies it directly), so there is nothing to resolve here — we only fetch the
+    supplies it directly), so there is nothing to resolve here. We only fetch the
     schedule needed to project the fix onto the route and compute the delay.
     """
     with Session(_engine) as session:
@@ -92,8 +92,8 @@ async def _should_write(redis: aioredis.Redis, key: str) -> bool:
     """Only write when the slot is empty or already ours.
 
     Any trip_update from a different producer (hell-gate-bridge's richer per-stop
-    prediction) is left untouched. Keying off our own SOURCE stamp — rather than
-    the mere absence of stop_time_updates — is race-safe: once a richer producer
+    prediction) is left untouched. Keying off our own SOURCE stamp (rather than
+    the mere absence of stop_time_updates) is race-safe: once a richer producer
     owns the key we defer for the record's lifetime instead of flip-flopping with
     it every poll."""
     existing = await redis.get(key)
@@ -116,7 +116,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
 
     # Check ownership before doing any work. Both halves of the key come
     # straight off the record, so this costs one Redis GET and saves a Postgres
-    # round-trip per position we were only going to discard — the common case
+    # round-trip per position we were only going to discard, the common case
     # for a producer like hell-gate-bridge, whose ~53 concurrent Amtrak vehicles
     # all share one credential and already own their trip_update keys.
     key = _trip_update_key(trip_id, record.get("start_date"))
@@ -155,7 +155,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     )
     payload = {
         "trip_id": trip_id,
-        # The secret credential, under its own name — never the vehicle id.
+        # The secret credential, under its own name, never the vehicle id.
         # cafe-car publishes a trip update's `vehicle_id` verbatim as the GTFS
         # VehicleDescriptor.id, so writing the tracker id there would both leak
         # the credential and collapse every trip we own onto one id.
@@ -164,7 +164,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
         "stop_time_updates": stop_time_updates,
         # Advisory duplicates of the head of the prediction list. cafe-car reads
         # stop_time_updates whenever it is non-empty, so these are only for making
-        # a `redis-cli GET trip_update:...` legible — and for the back-compat path
+        # a `redis-cli GET trip_update:...` legible, and for the back-compat path
         # should an old flat record still be live under its TTL.
         "delay": delay,
         "stop_sequence": stop_sequence,
@@ -183,7 +183,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
 
 async def run() -> None:
     redis = aioredis.from_url(REDIS_URL)
-    # Only recompute a key when its fix timestamp advances — avoids reprocessing
+    # Only recompute a key when its fix timestamp advances. This avoids reprocessing
     # the same position every sweep.
     seen: dict[str, int] = {}
     log.info("trip-updogger watching vehicle:* every %.1fs", POLL_INTERVAL)
