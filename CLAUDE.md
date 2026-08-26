@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Overview
 
 Async Python worker that turns the live `vehicle:*` positions already in Redis into GTFS-RT Trip
@@ -66,7 +64,3 @@ uv run python -m trip_updogger.main
 # Build and push Docker image (requires clean, pushed branch)
 make push
 ```
-
-## Rules
-
-- Never add Co-Authored-By trailers to commit messages.
