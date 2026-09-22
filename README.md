@@ -108,8 +108,9 @@ REDIS_URL=redis://localhost:6379/1 \
   DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/postgres \
   uv run python -m trip_updogger.main
 
-# Build and push Docker image (requires clean, pushed branch)
-make push
+# Build and push are CI's job: pushing to main publishes :latest and :<short-sha>.
+# `make cp` copies that short sha for the deploy-gtfs-rt manifest bump.
+make cp
 ```
 
 ---

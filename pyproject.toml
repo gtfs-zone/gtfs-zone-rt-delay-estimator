@@ -34,10 +34,12 @@ target-version = "py313"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "TCH", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "TC", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/trip_updogger/__init__.py" = ["F401"]
+# Tests take fixtures by name and return nothing worth annotating.
+"tests/**" = ["ANN"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

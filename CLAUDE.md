@@ -61,6 +61,11 @@ uv sync
 # Run the worker locally (requires Redis with vehicle:* keys and PostgreSQL with GTFS data)
 uv run python -m trip_updogger.main
 
-# Build and push Docker image (requires clean, pushed branch)
-make push
+# Build and push are CI's job: pushing to main publishes :latest and :<short-sha>.
+# `make cp` copies that short sha for the deploy-gtfs-rt manifest bump.
+make cp
 ```
+
+## Rules
+
+- Module loggers are named `log`, never `logger`: `log = logging.getLogger(__name__)`

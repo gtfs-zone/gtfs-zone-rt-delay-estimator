@@ -2,6 +2,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+
 from trip_updogger.trip_math import (
     build_stop_time_updates,
     compute_progress,
@@ -261,9 +262,24 @@ def test_service_day_base_untimed_stops_falls_back():
 # ---------------------------------------------------------------------------
 
 THREE_STOPS = [
-    {"stop_sequence": 1, "stop_id": "A", "arrival_time": "08:00:00", "departure_time": "08:01:00"},
-    {"stop_sequence": 2, "stop_id": "B", "arrival_time": "08:10:00", "departure_time": "08:11:00"},
-    {"stop_sequence": 3, "stop_id": "C", "arrival_time": "08:20:00", "departure_time": "08:21:00"},
+    {
+        "stop_sequence": 1,
+        "stop_id": "A",
+        "arrival_time": "08:00:00",
+        "departure_time": "08:01:00",
+    },
+    {
+        "stop_sequence": 2,
+        "stop_id": "B",
+        "arrival_time": "08:10:00",
+        "departure_time": "08:11:00",
+    },
+    {
+        "stop_sequence": 3,
+        "stop_id": "C",
+        "arrival_time": "08:20:00",
+        "departure_time": "08:21:00",
+    },
 ]
 BASE = _midnight(2026, 7, 24)
 
@@ -297,7 +313,12 @@ def test_build_stop_time_updates_delay_propagates_unchanged():
 
 def test_build_stop_time_updates_arrival_only_stop():
     stops = [
-        {"stop_sequence": 1, "stop_id": "A", "arrival_time": "08:00:00", "departure_time": None},
+        {
+            "stop_sequence": 1,
+            "stop_id": "A",
+            "arrival_time": "08:00:00",
+            "departure_time": None,
+        },
     ]
     updates = build_stop_time_updates(stops, 0, BASE, 30)
     assert updates[0]["arrival_time"] == BASE + parse_gtfs_time("08:00:00") + 30
@@ -307,8 +328,18 @@ def test_build_stop_time_updates_arrival_only_stop():
 
 def test_build_stop_time_updates_skips_untimed_stop():
     stops = [
-        {"stop_sequence": 1, "stop_id": "A", "arrival_time": None, "departure_time": None},
-        {"stop_sequence": 2, "stop_id": "B", "arrival_time": "08:10:00", "departure_time": "08:10:00"},
+        {
+            "stop_sequence": 1,
+            "stop_id": "A",
+            "arrival_time": None,
+            "departure_time": None,
+        },
+        {
+            "stop_sequence": 2,
+            "stop_id": "B",
+            "arrival_time": "08:10:00",
+            "departure_time": "08:10:00",
+        },
     ]
     updates = build_stop_time_updates(stops, 0, BASE, 0)
     assert [u["stop_sequence"] for u in updates] == [2]

@@ -57,7 +57,7 @@ def find_segment_and_ratio(
     stop_lats: list[float],
     stop_lons: list[float],
 ) -> tuple[int, float]:
-    """Find which polyline segment is nearest to (lat, lon) and the fractional position on it.
+    """Find the nearest polyline segment to (lat, lon) and the fraction along it.
 
     Longitudes are scaled by cos(lat) for an approximate equal-area projection so
     that distances are comparable across both axes.
@@ -66,7 +66,10 @@ def find_segment_and_ratio(
     and t in [0, 1] is the ratio along that segment toward the ahead stop.
     """
     cos_lat = math.cos(math.radians(lat))
-    coords = [(lon_ * cos_lat, lat_) for lat_, lon_ in zip(stop_lats, stop_lons)]
+    coords = [
+        (lon_ * cos_lat, lat_)
+        for lat_, lon_ in zip(stop_lats, stop_lons, strict=True)
+    ]
     line = LineString(coords)
     point = Point(lon * cos_lat, lat)
 
@@ -131,7 +134,9 @@ def compute_progress(
     stop_behind = stops[seg_idx]
     stop_ahead = stops[seg_idx + 1]
 
-    time_behind_str = stop_behind.get("departure_time") or stop_behind.get("arrival_time")
+    time_behind_str = stop_behind.get("departure_time") or stop_behind.get(
+        "arrival_time"
+    )
     time_ahead_str = stop_ahead.get("arrival_time") or stop_ahead.get("departure_time")
     if time_behind_str is None or time_ahead_str is None:
         return None
