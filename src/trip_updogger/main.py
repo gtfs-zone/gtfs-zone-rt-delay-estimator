@@ -10,6 +10,7 @@ from railroad_club.models import (
     GtfsStop,
     GtfsStopTime,
 )
+from railroad_club.vehicle_keys import trip_update_key
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
@@ -81,13 +82,6 @@ def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
     return stop_times, timezone
 
 
-def _trip_update_key(trip_id: str, start_date: str | None) -> str:
-    """Match cafe-car's ingest key scheme so gtfs_rt.py finds our prediction."""
-    if start_date:
-        return f"trip_update:{trip_id}:{start_date}"
-    return f"trip_update:{trip_id}"
-
-
 async def _should_write(redis: aioredis.Redis, key: str) -> bool:
     """Only write when the slot is empty or already ours.
 
@@ -108,10 +102,16 @@ async def _should_write(redis: aioredis.Redis, key: str) -> bool:
 
 async def process_position(redis: aioredis.Redis, record: dict) -> None:
     trip_id = record.get("trip_id")
+    tracker_id = record.get("tracker_id")
     lat = record.get("lat")
     lon = record.get("lon")
     timestamp = record.get("timestamp")
     if not trip_id or lat is None or lon is None or timestamp is None:
+        return
+    # The key is tracker-scoped, so a record without one cannot be written
+    # anywhere a reader would look for it.
+    if not tracker_id:
+        log.warning("Position for trip_id=%s has no tracker_id; skipped", trip_id)
         return
 
     # Check ownership before doing any work. Both halves of the key come
@@ -119,7 +119,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     # round-trip per position we were only going to discard, the common case
     # for a producer like hell-gate-bridge, whose ~53 concurrent Amtrak vehicles
     # all share one credential and already own their trip_update keys.
-    key = _trip_update_key(trip_id, record.get("start_date"))
+    key = trip_update_key(tracker_id, trip_id, record.get("start_date"))
     if not await _should_write(redis, key):
         return
 
@@ -159,7 +159,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
         # cafe-car publishes a trip update's `vehicle_id` verbatim as the GTFS
         # VehicleDescriptor.id, so writing the tracker id there would both leak
         # the credential and collapse every trip we own onto one id.
-        "tracker_id": record.get("tracker_id"),
+        "tracker_id": tracker_id,
         "timestamp": fix_epoch,
         "stop_time_updates": stop_time_updates,
         # Advisory duplicates of the head of the prediction list. cafe-car reads
