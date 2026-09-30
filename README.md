@@ -2,7 +2,7 @@
 
 Tiny async Python worker that turns live vehicle positions into GTFS-RT Trip Updates in Redis.
 
-Part of a larger stack; see [music-student](https://git.kcfam.us/gtfs.zone/music-student) for the full deployment.
+Part of a larger stack; see [music-student](https://github.com/gtfs-zone/music-student) for the full deployment.
 
 ### How it fits together
 
