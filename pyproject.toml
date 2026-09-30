@@ -9,6 +9,7 @@ dependencies = [
     "shapely>=2.1.2",
     "sqlmodel>=0.0.21",
     "railroad-club",
+    "tzdata>=2026.4",
 ]
 
 [tool.uv.sources]
