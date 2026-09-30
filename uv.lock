@@ -741,7 +741,7 @@ wheels = [
 [[package]]
 name = "railroad-club"
 version = "0.1.0"
-source = { git = "https://git.kcfam.us/gtfs.zone/railroad-club.git#0952383e670c89a4fe559956750941e5a9dedafb" }
+source = { git = "https://github.com/gtfs-zone/railroad-club.git#647f187940e698cf7d507c3250e39511d9d5d9b9" }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
@@ -948,7 +948,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "psycopg2-binary", specifier = ">=2.9" },
-    { name = "railroad-club", git = "https://git.kcfam.us/gtfs.zone/railroad-club.git" },
+    { name = "railroad-club", git = "https://github.com/gtfs-zone/railroad-club.git" },
     { name = "redis", extras = ["hiredis"], specifier = ">=5.2" },
     { name = "shapely", specifier = ">=2.1.2" },
     { name = "sqlmodel", specifier = ">=0.0.21" },
