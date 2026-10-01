@@ -19,7 +19,6 @@ gtfs-zone-db-models = { git = "https://github.com/gtfs-zone/gtfs-zone-db-models.
 [dependency-groups]
 dev = [
     "commitizen",
-    "pre-commit",
     "pytest>=9.0.2",
     "ruff",
 ]
