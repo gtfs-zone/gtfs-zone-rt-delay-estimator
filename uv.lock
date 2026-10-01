@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "gtfs-zone-rt-delay-estimator"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "gtfs-zone-db-models" },
