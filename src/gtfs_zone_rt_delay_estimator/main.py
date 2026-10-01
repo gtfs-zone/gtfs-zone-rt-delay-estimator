@@ -5,16 +5,16 @@ import os
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
-from railroad_club.models import (
+from gtfs_zone_db_models.models import (
     GtfsStaticFeed,
     GtfsStop,
     GtfsStopTime,
 )
-from railroad_club.vehicle_keys import trip_update_key
+from gtfs_zone_db_models.vehicle_keys import trip_update_key
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
 
-from trip_updogger.trip_math import (
+from gtfs_zone_rt_delay_estimator.trip_math import (
     build_stop_time_updates,
     compute_progress,
     service_day_base,
@@ -28,12 +28,12 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 # How often to sweep the live vehicle:* positions for new fixes.
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 
-# Match cafe-car's ingest TRIP_UPDATE_TTL so stale predictions expire together.
+# Match rt-api's ingest TRIP_UPDATE_TTL so stale predictions expire together.
 TRIP_UPDATE_TTL = 300
 
 # Stamped on every record we write so we never overwrite a richer producer's
-# trip_update (e.g. hell-gate-bridge's per-stop prediction), only our own.
-SOURCE = "trip-updogger"
+# trip_update (e.g. rt-pollers's per-stop prediction), only our own.
+SOURCE = "rt-delay-estimator"
 
 _engine = create_engine(DATABASE_URL)
 
@@ -42,7 +42,7 @@ def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
     """Load the scheduled stop_times (with coords) and feed timezone for a trip.
 
     Unlike the old OwnTracks/HTTP shim, the position record already carries the
-    resolved ``trip_id`` (vehicle-poser resolves it from the schedule; hell-gate
+    resolved ``trip_id`` (rt-traccar-receiver resolves it from the schedule; rt-pollers
     supplies it directly), so there is nothing to resolve here. We only fetch the
     schedule needed to project the fix onto the route and compute the delay.
     """
@@ -85,7 +85,7 @@ def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
 async def _should_write(redis: aioredis.Redis, key: str) -> bool:
     """Only write when the slot is empty or already ours.
 
-    Any trip_update from a different producer (hell-gate-bridge's richer per-stop
+    Any trip_update from a different producer (rt-pollers's richer per-stop
     prediction) is left untouched. Keying off our own SOURCE stamp (rather than
     the mere absence of stop_time_updates) is race-safe: once a richer producer
     owns the key we defer for the record's lifetime instead of flip-flopping with
@@ -117,7 +117,7 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     # Check ownership before doing any work. Both halves of the key come
     # straight off the record, so this costs one Redis GET and saves a Postgres
     # round-trip per position we were only going to discard, the common case
-    # for a producer like hell-gate-bridge, whose ~53 concurrent Amtrak vehicles
+    # for a producer like rt-pollers, whose ~53 concurrent Amtrak vehicles
     # all share one credential and already own their trip_update keys.
     key = trip_update_key(tracker_id, trip_id, record.get("start_date"))
     if not await _should_write(redis, key):
@@ -156,13 +156,13 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     payload = {
         "trip_id": trip_id,
         # The secret credential, under its own name, never the vehicle id.
-        # cafe-car publishes a trip update's `vehicle_id` verbatim as the GTFS
+        # rt-api publishes a trip update's `vehicle_id` verbatim as the GTFS
         # VehicleDescriptor.id, so writing the tracker id there would both leak
         # the credential and collapse every trip we own onto one id.
         "tracker_id": tracker_id,
         "timestamp": fix_epoch,
         "stop_time_updates": stop_time_updates,
-        # Advisory duplicates of the head of the prediction list. cafe-car reads
+        # Advisory duplicates of the head of the prediction list. rt-api reads
         # stop_time_updates whenever it is non-empty, so these are only for making
         # a `redis-cli GET trip_update:...` legible, and for the back-compat path
         # should an old flat record still be live under its TTL.
@@ -172,8 +172,8 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     }
     # Carry the position record's public identity across so the trip update
     # names the same vehicle its position does. Omit rather than write None: an
-    # absent key is what tells cafe-car to fall back to the tracker nickname,
-    # which is right for single-device producers (vehicle-poser sets neither).
+    # absent key is what tells rt-api to fall back to the tracker nickname,
+    # which is right for single-device producers (rt-traccar-receiver sets neither).
     for field in ("vehicle_id", "vehicle_label"):
         if record.get(field):
             payload[field] = record[field]
@@ -186,7 +186,7 @@ async def run() -> None:
     # Only recompute a key when its fix timestamp advances. This avoids reprocessing
     # the same position every sweep.
     seen: dict[str, int] = {}
-    log.info("trip-updogger watching vehicle:* every %.1fs", POLL_INTERVAL)
+    log.info("rt-delay-estimator watching vehicle:* every %.1fs", POLL_INTERVAL)
     try:
         while True:
             async for key in redis.scan_iter("vehicle:*"):

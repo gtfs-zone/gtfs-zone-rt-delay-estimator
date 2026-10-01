@@ -1,24 +1,24 @@
-# trip-updogger
+# gtfs-zone-rt-delay-estimator
 
 Tiny async Python worker that turns live vehicle positions into GTFS-RT Trip Updates in Redis.
 
-Part of a larger stack; see [music-student](https://github.com/gtfs-zone/music-student) for the full deployment.
+Part of a larger stack; see [dev-stack](https://github.com/gtfs-zone/gtfs-zone-dev-stack) for the full deployment.
 
 ### How it fits together
 
 ```
 Traccar Client app (phone) ─┐
                             ├─> vehicle:{tracker_id}:* (Redis, DB 1)
-hell-gate-bridge ───────────┘        │
-   (via cafe-car /ingest)            │ watch (poll every POLL_INTERVAL)
-                                trip-updogger (this worker)
+rt-pollers ───────────┘        │
+   (via rt-api /ingest)            │ watch (poll every POLL_INTERVAL)
+                                rt-delay-estimator (this worker)
                                      │ project onto the schedule, predict every stop ahead
                                      └─> trip_update:{trip_id} (300s TTL)
-                                              └─> cafe-car (serves GTFS-RT)
+                                              └─> rt-api (serves GTFS-RT)
 ```
 
-Positions are already in Redis: vehicle-poser writes them for the Traccar path, and cafe-car's
-`/ingest/position` writes them for hell-gate-bridge. This worker sweeps those `vehicle:*` keys, and for
+Positions are already in Redis: rt-traccar-receiver writes them for the Traccar path, and rt-api's
+`/ingest/position` writes them for rt-pollers. This worker sweeps those `vehicle:*` keys, and for
 each new fix it loads the trip's scheduled stop times from PostgreSQL, projects the fix onto the stop
 polyline to measure the vehicle's delay against the schedule, and writes a Trip Update to Redis with a
 300-second TTL.
@@ -33,11 +33,11 @@ Traccar path carry no `current_stop_sequence` or `stop_id` for it to fall back o
 Schedule times are resolved against the **service day**, not the fix's calendar date. GTFS times run
 past `24:00:00`, so a 01:00 fix on a trip scheduled 23:00–25:30 belongs to the previous day's run.
 
-The `trip_id` is taken straight from the position record. Vehicle-poser resolves it from the schedule
-rules and hell-gate supplies it directly, so this worker never re-resolves it.
+The `trip_id` is taken straight from the position record. rt-traccar-receiver resolves it from the schedule
+rules and rt-pollers supplies it directly, so this worker never re-resolves it.
 
 **Collision guard:** the worker writes only when the `trip_update:*` slot is empty or already carries
-its own `source` stamp. A record from any other producer (hell-gate-bridge's richer per-stop prediction,
+its own `source` stamp. A record from any other producer (rt-pollers's richer per-stop prediction,
 built from real observed ETAs rather than propagated schedule delay) is left untouched. Keying off the
 `source` stamp rather than the shape of the record means that once a richer producer owns a key, this
 worker defers for the record's lifetime instead of flip-flopping with it every poll.
@@ -46,17 +46,17 @@ worker defers for the record's lifetime instead of flip-flopping with it every p
 
 ## Redis contract
 
-**Reads** `vehicle:{tracker_id}:{trip_slug}` records (written by vehicle-poser / cafe-car `/ingest`):
+**Reads** `vehicle:{tracker_id}:{trip_slug}` records (written by rt-traccar-receiver / rt-api `/ingest`):
 
 ```json
 {"tracker_id": "...", "trip_id": "...", "lat": 51.5, "lon": -0.1, "timestamp": 1234567890, "start_date": "20260724"}
 ```
 
-`tracker_id` is the device's **secret** id; it is never exposed in a feed. cafe-car labels vehicles by
+`tracker_id` is the device's **secret** id; it is never exposed in a feed. rt-api labels vehicles by
 the tracker's `nickname`.
 
 **Writes** `trip_update:{trip_id}` (or `trip_update:{trip_id}:{start_date}` when the position carries a
-`start_date`, matching cafe-car's ingest key scheme):
+`start_date`, matching rt-api's ingest key scheme):
 
 ```json
 {
@@ -69,17 +69,17 @@ the tracker's `nickname`.
   ],
   "delay": 42,
   "stop_sequence": 5,
-  "source": "trip-updogger"
+  "source": "rt-delay-estimator"
 }
 ```
 
 `stop_time_updates` is the payload, one entry per stop from the one ahead to the end of the trip, with
-absolute epoch times. Its field names match cafe-car's ingest contract, the same one hell-gate-bridge
+absolute epoch times. Its field names match rt-api's ingest contract, the same one rt-pollers
 writes. Top-level `delay` and `stop_sequence` duplicate the head of that list; they are advisory, kept
-so a `redis-cli GET` stays readable, and cafe-car reads the list whenever it is non-empty.
+so a `redis-cli GET` stays readable, and rt-api reads the list whenever it is non-empty.
 
 `delay` is in seconds (positive = late, negative = early). `tracker_id` is the device's **secret**
-credential, held for internal reference only. It is never published. cafe-car labels the vehicle in the
+credential, held for internal reference only. It is never published. rt-api labels the vehicle in the
 public feed by the producer's `vehicle_id` if the position record carried one, else the tracker's
 `nickname`.
 
@@ -106,10 +106,10 @@ uv sync
 # Run locally (requires Redis with vehicle:* keys and PostgreSQL with GTFS data)
 REDIS_URL=redis://localhost:6379/1 \
   DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/postgres \
-  uv run python -m trip_updogger.main
+  uv run python -m gtfs_zone_rt_delay_estimator.main
 
 # Build and push are CI's job: pushing to main publishes :latest and :<short-sha>.
-# `make cp` copies that short sha for the deploy-gtfs-rt manifest bump.
+# `make cp` copies that short sha for the gtfs-zone-infra manifest bump.
 make cp
 ```
 

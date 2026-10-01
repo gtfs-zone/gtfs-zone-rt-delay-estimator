@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trip_updogger.trip_math import (
+from gtfs_zone_rt_delay_estimator.trip_math import (
     build_stop_time_updates,
     compute_progress,
     find_segment_and_ratio,

@@ -170,7 +170,7 @@ def build_stop_time_updates(
     to order the trip's stops, which is exactly why these updates were unusable
     before.
 
-    Field names match cafe-car's ingest/serving contract (`_fill_stop_time_update`).
+    Field names match rt-api's ingest/serving contract (`_fill_stop_time_update`).
     """
     updates: list[dict] = []
     for stop in stops[next_index:]:

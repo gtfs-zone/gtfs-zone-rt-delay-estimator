@@ -3,17 +3,17 @@
 ## Overview
 
 Async Python worker that turns the live `vehicle:*` positions already in Redis into GTFS-RT Trip
-Updates (also in Redis). The entire worker logic lives in `src/trip_updogger/main.py`; SQLModel models
-come from the shared `railroad_club` package; the schedule/geometry math is in `trip_math.py`.
+Updates (also in Redis). The entire worker logic lives in `src/gtfs_zone_rt_delay_estimator/main.py`; SQLModel models
+come from the shared `gtfs_zone_db_models` package; the schedule/geometry math is in `trip_math.py`.
 
 ## Architecture
 
-**Flow:** vehicle-poser / cafe-car `/ingest` → `vehicle:*` (Redis) → this worker → `trip_update:*` (Redis) → cafe-car
+**Flow:** rt-traccar-receiver / rt-api `/ingest` → `vehicle:*` (Redis) → this worker → `trip_update:*` (Redis) → rt-api
 
 1. `run()` opens Redis and loops forever, sweeping `vehicle:*` keys every `POLL_INTERVAL` seconds. An
    in-memory `{key: timestamp}` map skips positions whose fix time hasn't advanced.
-2. Each position record already carries a resolved `trip_id` (vehicle-poser resolves it from the
-   schedule rules; hell-gate-bridge supplies it directly), so the worker does **not** re-resolve it.
+2. Each position record already carries a resolved `trip_id` (rt-traccar-receiver resolves it from the
+   schedule rules; rt-pollers supplies it directly), so the worker does **not** re-resolve it.
 3. `load_stop_times(trip_id)` fetches the trip's scheduled stop times (joined with stops) and the feed
    timezone from PostgreSQL.
 4. `service_day_base()` picks the local midnight the trip's schedule is measured from. GTFS times run
@@ -27,18 +27,18 @@ come from the shared `railroad_club` package; the schedule/geometry math is in `
    delay`) alongside the delay. The vehicle is assumed to hold its current lateness for the rest of the
    trip. With no dwell or running-time model, constant-delay propagation is the only honest option.
 7. Results are written to Redis as `trip_update:{trip_id}` (or `:{start_date}` when present) with a
-   300-second TTL, the key cafe-car reads. A **collision guard** (`_should_write`) skips the write
+   300-second TTL, the key rt-api reads. A **collision guard** (`_should_write`) skips the write
    unless the slot is empty or already carries our own `source` stamp, so a richer producer's record
-   (hell-gate-bridge's) is never clobbered.
+   (rt-pollers's) is never clobbered.
 
 **Why the times matter:** an update carrying only a delay is unusable to a consumer trying to work out
 *where* a vehicle is. Vehicles from the Traccar path have no `current_stop_sequence` and no `stop_id`
-(vehicle-poser doesn't compute them), so a consumer's only remaining option is to infer the current stop
+(rt-traccar-receiver doesn't compute them), so a consumer's only remaining option is to infer the current stop
 from the trip's soonest still-future prediction, which requires the prediction to have a time. Emitting
 delay alone is what left those vehicles unplaceable.
 
 The `tracker_id` in a position record is the tracker's **secret** id; it is never written into a feed.
-cafe-car labels vehicles by the tracker's `nickname`.
+rt-api labels vehicles by the tracker's `nickname`.
 
 ## Environment Variables
 
@@ -59,10 +59,10 @@ Dependencies are managed with `uv` (Python 3.13).
 uv sync
 
 # Run the worker locally (requires Redis with vehicle:* keys and PostgreSQL with GTFS data)
-uv run python -m trip_updogger.main
+uv run python -m gtfs_zone_rt_delay_estimator.main
 
 # Build and push are CI's job: pushing to main publishes :latest and :<short-sha>.
-# `make cp` copies that short sha for the deploy-gtfs-rt manifest bump.
+# `make cp` copies that short sha for the gtfs-zone-infra manifest bump.
 make cp
 ```
 

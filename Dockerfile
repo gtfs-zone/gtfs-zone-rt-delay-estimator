@@ -38,4 +38,4 @@ RUN mkdir -p /app/beat && chown bridge:bridge /app/beat
 USER bridge
 
 
-CMD ["python", "-m", "trip_updogger.main"]
+CMD ["python", "-m", "gtfs_zone_rt_delay_estimator.main"]
