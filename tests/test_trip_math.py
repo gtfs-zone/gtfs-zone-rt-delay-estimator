@@ -15,12 +15,15 @@ from gtfs_zone_rt_delay_estimator.trip_math import (
 # parse_gtfs_time
 # ---------------------------------------------------------------------------
 
+
 def test_parse_gtfs_time_normal():
     assert parse_gtfs_time("08:30:00") == 8 * 3600 + 30 * 60
+
 
 def test_parse_gtfs_time_past_midnight():
     # GTFS allows times past 24:00 for trips that run after midnight
     assert parse_gtfs_time("25:05:30") == 25 * 3600 + 5 * 60 + 30
+
 
 def test_parse_gtfs_time_midnight():
     assert parse_gtfs_time("00:00:00") == 0
@@ -79,6 +82,7 @@ def test_find_segment_after_last_stop_clamps():
 # ---------------------------------------------------------------------------
 # compute_progress
 # ---------------------------------------------------------------------------
+
 
 def _stops(departure_0, arrival_1):
     """Two stops along the meridian with given schedule times."""
@@ -140,12 +144,30 @@ def test_compute_progress_at_last_stop():
 
 def test_compute_progress_next_index_is_the_stop_ahead():
     stops = [
-        {"stop_sequence": 1, "stop_id": "A", "stop_lat": 45.0, "stop_lon": -73.0,
-         "arrival_time": "08:00:00", "departure_time": "08:00:00"},
-        {"stop_sequence": 2, "stop_id": "B", "stop_lat": 45.1, "stop_lon": -73.0,
-         "arrival_time": "08:10:00", "departure_time": "08:10:00"},
-        {"stop_sequence": 3, "stop_id": "C", "stop_lat": 45.2, "stop_lon": -73.0,
-         "arrival_time": "08:20:00", "departure_time": "08:20:00"},
+        {
+            "stop_sequence": 1,
+            "stop_id": "A",
+            "stop_lat": 45.0,
+            "stop_lon": -73.0,
+            "arrival_time": "08:00:00",
+            "departure_time": "08:00:00",
+        },
+        {
+            "stop_sequence": 2,
+            "stop_id": "B",
+            "stop_lat": 45.1,
+            "stop_lon": -73.0,
+            "arrival_time": "08:10:00",
+            "departure_time": "08:10:00",
+        },
+        {
+            "stop_sequence": 3,
+            "stop_id": "C",
+            "stop_lat": 45.2,
+            "stop_lon": -73.0,
+            "arrival_time": "08:20:00",
+            "departure_time": "08:20:00",
+        },
     ]
     # Between stops 2 and 3 → heading for stop 3, which is index 2
     progress = compute_progress(45.15, -73.0, 8 * 3600 + 15 * 60, stops)
@@ -155,10 +177,22 @@ def test_compute_progress_next_index_is_the_stop_ahead():
 
 def test_compute_progress_returns_stops_sorted():
     stops = [
-        {"stop_sequence": 2, "stop_id": "B", "stop_lat": 45.1, "stop_lon": -73.0,
-         "arrival_time": "08:10:00", "departure_time": "08:10:00"},
-        {"stop_sequence": 1, "stop_id": "A", "stop_lat": 45.0, "stop_lon": -73.0,
-         "arrival_time": "08:00:00", "departure_time": "08:00:00"},
+        {
+            "stop_sequence": 2,
+            "stop_id": "B",
+            "stop_lat": 45.1,
+            "stop_lon": -73.0,
+            "arrival_time": "08:10:00",
+            "departure_time": "08:10:00",
+        },
+        {
+            "stop_sequence": 1,
+            "stop_id": "A",
+            "stop_lat": 45.0,
+            "stop_lon": -73.0,
+            "arrival_time": "08:00:00",
+            "departure_time": "08:00:00",
+        },
     ]
     progress = compute_progress(45.05, -73.0, 8 * 3600 + 5 * 60, stops)
     assert [s["stop_sequence"] for s in progress.stops] == [1, 2]
@@ -166,28 +200,53 @@ def test_compute_progress_returns_stops_sorted():
 
 def test_compute_progress_missing_coordinates():
     stops = [
-        {"stop_sequence": 1, "stop_lat": None, "stop_lon": -73.0,
-         "arrival_time": "08:00:00", "departure_time": "08:00:00"},
-        {"stop_sequence": 2, "stop_lat": 45.1, "stop_lon": -73.0,
-         "arrival_time": "08:10:00", "departure_time": "08:10:00"},
+        {
+            "stop_sequence": 1,
+            "stop_lat": None,
+            "stop_lon": -73.0,
+            "arrival_time": "08:00:00",
+            "departure_time": "08:00:00",
+        },
+        {
+            "stop_sequence": 2,
+            "stop_lat": 45.1,
+            "stop_lon": -73.0,
+            "arrival_time": "08:10:00",
+            "departure_time": "08:10:00",
+        },
     ]
     assert compute_progress(45.05, -73.0, 8 * 3600 + 5 * 60, stops) is None
 
 
 def test_compute_progress_single_stop_returns_none():
     stops = [
-        {"stop_sequence": 1, "stop_lat": 45.0, "stop_lon": -73.0,
-         "arrival_time": "08:00:00", "departure_time": "08:00:00"},
+        {
+            "stop_sequence": 1,
+            "stop_lat": 45.0,
+            "stop_lon": -73.0,
+            "arrival_time": "08:00:00",
+            "departure_time": "08:00:00",
+        },
     ]
     assert compute_progress(45.0, -73.0, 8 * 3600, stops) is None
 
 
 def test_compute_progress_missing_time_returns_none():
     stops = [
-        {"stop_sequence": 1, "stop_lat": 45.0, "stop_lon": -73.0,
-         "arrival_time": None, "departure_time": None},
-        {"stop_sequence": 2, "stop_lat": 45.1, "stop_lon": -73.0,
-         "arrival_time": "08:10:00", "departure_time": "08:10:00"},
+        {
+            "stop_sequence": 1,
+            "stop_lat": 45.0,
+            "stop_lon": -73.0,
+            "arrival_time": None,
+            "departure_time": None,
+        },
+        {
+            "stop_sequence": 2,
+            "stop_lat": 45.1,
+            "stop_lon": -73.0,
+            "arrival_time": "08:10:00",
+            "departure_time": "08:10:00",
+        },
     ]
     assert compute_progress(45.05, -73.0, 8 * 3600 + 5 * 60, stops) is None
 
@@ -195,10 +254,20 @@ def test_compute_progress_missing_time_returns_none():
 def test_compute_progress_unsorted_stop_sequence():
     # Stops provided out of order, should still work
     stops = [
-        {"stop_sequence": 2, "stop_lat": 45.1, "stop_lon": -73.0,
-         "arrival_time": "08:10:00", "departure_time": "08:10:00"},
-        {"stop_sequence": 1, "stop_lat": 45.0, "stop_lon": -73.0,
-         "arrival_time": "08:00:00", "departure_time": "08:00:00"},
+        {
+            "stop_sequence": 2,
+            "stop_lat": 45.1,
+            "stop_lon": -73.0,
+            "arrival_time": "08:10:00",
+            "departure_time": "08:10:00",
+        },
+        {
+            "stop_sequence": 1,
+            "stop_lat": 45.0,
+            "stop_lon": -73.0,
+            "arrival_time": "08:00:00",
+            "departure_time": "08:00:00",
+        },
     ]
     progress = compute_progress(45.05, -73.0, 8 * 3600 + 5 * 60, stops)
     assert progress.delay == 0

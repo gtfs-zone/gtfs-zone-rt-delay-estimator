@@ -67,8 +67,7 @@ def find_segment_and_ratio(
     """
     cos_lat = math.cos(math.radians(lat))
     coords = [
-        (lon_ * cos_lat, lat_)
-        for lat_, lon_ in zip(stop_lats, stop_lons, strict=True)
+        (lon_ * cos_lat, lat_) for lat_, lon_ in zip(stop_lats, stop_lons, strict=True)
     ]
     line = LineString(coords)
     point = Point(lon * cos_lat, lat)
