@@ -1,0 +1,43 @@
+publiccodeYmlVersion: "0.4"
+
+name: GTFS.zone RT Delay Estimator
+url: "https://github.com/gtfs-zone/gtfs-zone-rt-delay-estimator"
+
+platforms:
+  - linux
+
+categories:
+  - fleet-management
+
+developmentStatus: beta
+
+softwareType: "standalone/backend"
+
+description:
+  en:
+    shortDescription: >
+      A worker that turns live vehicle positions into GTFS Realtime trip updates.
+    longDescription: >
+      GTFS.zone RT Delay Estimator sweeps the live vehicle positions in
+      Redis, projects each new fix onto the scheduled stop pattern of its trip
+      to measure the delay, and writes a trip update predicting every stop
+      ahead to the end of the trip, with absolute arrival and departure times.
+      gtfs-zone-rt-api serves the result as GTFS Realtime.
+    features:
+      - Delay measured by projecting positions onto the schedule
+      - Predictions for every stop ahead with absolute times
+      - Trip updates written to Redis for rt-api to serve
+
+legal:
+  license: AGPL-3.0-or-later
+
+maintenance:
+  type: community
+  contacts:
+    - name: Max Katz-Christy
+      email: maxkatzchristy@gmail.com
+
+localisation:
+  localisationReady: false
+  availableLanguages:
+    - en
