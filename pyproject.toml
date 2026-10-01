@@ -3,6 +3,7 @@ name = "gtfs-zone-rt-delay-estimator"
 version = "0.2.0"
 requires-python = ">=3.13"
 description = "Redis worker that turns live vehicle positions into GTFS-RT Trip Updates"
+license = "AGPL-3.0-or-later"
 dependencies = [
     "psycopg2-binary>=2.9",
     "redis[hiredis]>=5.2",
