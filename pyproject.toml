@@ -11,6 +11,7 @@ dependencies = [
     "sqlmodel>=0.0.21",
     "gtfs-zone-db-models",
     "tzdata>=2026.4",
+    "sqlalchemy>=2",
 ]
 
 [tool.uv.sources]
@@ -19,8 +20,10 @@ gtfs-zone-db-models = { git = "https://github.com/gtfs-zone/gtfs-zone-db-models.
 [dependency-groups]
 dev = [
     "commitizen",
+    "deptry>=0.25.1",
     "pytest>=9.0.2",
     "ruff",
+    "vulture>=2.16",
 ]
 
 [build-system]
@@ -41,6 +44,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "TC", "RUF"]
 "src/gtfs_zone_rt_delay_estimator/__init__.py" = ["F401"]
 # Tests take fixtures by name and return nothing worth annotating.
 "tests/**" = ["ANN"]
+
+[tool.vulture]
+paths = ["src"]
+# Used only through a framework: routes, validators, tasks, ORM fields
+ignore_decorators = ["@app.*", "@router.*", "@field_validator", "@model_validator"]
+ignore_names = ["cls", "model_config"]
+
+[tool.deptry]
+per_rule_ignores.DEP002 = [
+    "psycopg2-binary",  # SQLAlchemy driver, loaded from the database URL
+    "tzdata",  # zoneinfo data for slim images without system tzdata
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
