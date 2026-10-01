@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Async Python worker that turns the `vehicle:*` positions in Redis into GTFS-RT
-Trip Updates (`trip_update:*`, also in Redis) for rt-api. Pushing to `main`
-publishes the image; `make cp` copies the short sha for the gtfs-zone-infra bump.
+Trip Updates (`trip_update:*`, also in Redis) for rt-api. A `v*` tag
+publishes the image; gtfs-zone-infra pins that tag.
 
 ## Architecture
 
