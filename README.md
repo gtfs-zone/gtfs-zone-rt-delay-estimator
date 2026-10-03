@@ -1,5 +1,7 @@
 # gtfs-zone-rt-delay-estimator
 
+[![CI](https://img.shields.io/github/actions/workflow/status/gtfs-zone/gtfs-zone-rt-delay-estimator/check.yml?branch=main&label=CI)](https://github.com/gtfs-zone/gtfs-zone-rt-delay-estimator/actions/workflows/check.yml?query=branch%3Amain) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE.txt) [![Container image](https://img.shields.io/badge/image-ghcr.io-blue?logo=docker&logoColor=white)](https://github.com/gtfs-zone/gtfs-zone-rt-delay-estimator/pkgs/container/gtfs-zone-rt-delay-estimator)
+
 Tiny async Python worker that turns live vehicle positions into GTFS-RT Trip Updates in Redis.
 
 Part of a larger stack; see [dev-stack](https://github.com/gtfs-zone/gtfs-zone-dev-stack) for the full deployment.
