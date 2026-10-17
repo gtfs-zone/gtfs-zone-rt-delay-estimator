@@ -16,7 +16,9 @@ contract and the env vars are in [README.md](README.md).
 - Every prediction carries an **absolute epoch** arrival/departure alongside the
   delay. Traccar vehicles have no `stop_id`, so consumers place them from the
   soonest future prediction time; a delay alone leaves them unplaceable.
-- Delay is propagated as a constant for the rest of the trip.
+- Delay is propagated as a constant for the rest of the trip, floored at 0
+  after the next arrival (vehicles hold rather than run early), and a vehicle
+  is held at the origin until `has_departed()`.
 - `_should_write` only overwrites an empty slot or one carrying our own
   `source` stamp, so a richer producer (rt-pollers) is never clobbered.
 - `tracker_id` is the tracker's **secret** id; never write it into a feed.

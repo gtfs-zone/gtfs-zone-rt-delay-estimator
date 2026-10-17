@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from gtfs_zone_rt_delay_estimator.trip_math import (
+    DEPART_DIST,
+    DEPART_DIST_MOVING,
     build_stop_time_updates,
     compute_progress,
     find_segment_and_ratio,
@@ -274,6 +276,82 @@ def test_compute_progress_unsorted_stop_sequence():
 
 
 # ---------------------------------------------------------------------------
+# compute_progress: holding at the origin
+# ---------------------------------------------------------------------------
+
+# Metres per degree of latitude, for placing fixes north of stop A.
+M_PER_DEG = 111_195
+EIGHT = 8 * 3600
+
+
+def _north(metres):
+    return 45.0 + metres / M_PER_DEG
+
+
+def test_origin_hold_before_departure():
+    stops = _stops("08:00:00", "08:10:00")
+    progress = compute_progress(45.0, -73.0, EIGHT - 5 * 60, stops)
+    assert progress.next_index == 0
+    assert progress.delay == 0
+
+
+def test_origin_hold_after_departure_time_is_late():
+    stops = _stops("08:00:00", "08:10:00")
+    progress = compute_progress(_north(50), -73.0, EIGHT + 3 * 60, stops)
+    assert progress.next_index == 0
+    assert progress.delay == 3 * 60
+
+
+def test_origin_hold_beside_the_stop():
+    # Far from the origin but sideways, so no closer to the next stop.
+    stops = _stops("08:00:00", "08:10:00")
+    progress = compute_progress(45.0, -73.0 + 0.005, EIGHT - 60, stops)
+    assert progress.next_index == 0
+    assert progress.delay == 0
+
+
+def test_departed_past_depart_dist_can_be_early():
+    stops = _stops("08:00:00", "08:10:00")
+    progress = compute_progress(_north(DEPART_DIST + 50), -73.0, EIGHT - 60, stops)
+    assert progress.next_index == 1
+    assert progress.delay < 0
+
+
+def test_departed_sooner_when_moving_toward_next_stop():
+    stops = _stops("08:00:00", "08:10:00")
+    lat = _north(DEPART_DIST_MOVING + 10)
+    assert compute_progress(lat, -73.0, EIGHT, stops, 0.0, 8.0).next_index == 1
+    # Same spot: no heading, pointing away, or too slow all keep it held.
+    assert compute_progress(lat, -73.0, EIGHT, stops).next_index == 0
+    assert compute_progress(lat, -73.0, EIGHT, stops, 180.0, 8.0).next_index == 0
+    assert compute_progress(lat, -73.0, EIGHT, stops, 0.0, 0.5).next_index == 0
+
+
+def test_short_first_segment_departs_at_half_its_length():
+    leg = DEPART_DIST  # shorter than 2 * DEPART_DIST
+    stops = _stops("08:00:00", "08:02:00")
+    stops[1]["stop_lat"] = _north(leg)
+    assert compute_progress(_north(leg * 0.4), -73.0, EIGHT, stops).next_index == 0
+    assert compute_progress(_north(leg * 0.6), -73.0, EIGHT, stops).next_index == 1
+
+
+def test_loop_trip_back_at_origin_is_not_held():
+    stops = [
+        *_stops("08:00:00", "08:10:00"),
+        {
+            "stop_sequence": 3,
+            "stop_id": "A",
+            "stop_lat": 45.0,
+            "stop_lon": -73.0,
+            "arrival_time": "08:20:00",
+            "departure_time": "08:20:00",
+        },
+    ]
+    assert compute_progress(_north(20), -73.0, EIGHT - 60, stops).next_index == 0
+    assert compute_progress(_north(20), -73.0, EIGHT + 19 * 60, stops).next_index != 0
+
+
+# ---------------------------------------------------------------------------
 # service_day_base
 # ---------------------------------------------------------------------------
 
@@ -376,8 +454,8 @@ def test_build_stop_time_updates_times_increase_along_the_trip():
 
 
 def test_build_stop_time_updates_delay_propagates_unchanged():
-    updates = build_stop_time_updates(THREE_STOPS, 0, BASE, -45)
-    assert {u["arrival_delay"] for u in updates} == {-45}
+    updates = build_stop_time_updates(THREE_STOPS, 0, BASE, 45)
+    assert {u["arrival_delay"] for u in updates} == {45}
 
 
 def test_build_stop_time_updates_arrival_only_stop():
@@ -417,3 +495,14 @@ def test_build_stop_time_updates_skips_untimed_stop():
 def test_build_stop_time_updates_at_last_stop_is_single_entry():
     updates = build_stop_time_updates(THREE_STOPS, 2, BASE, 0)
     assert [u["stop_sequence"] for u in updates] == [3]
+
+
+def test_build_stop_time_updates_early_only_for_next_arrival():
+    updates = build_stop_time_updates(THREE_STOPS, 1, BASE, -120)
+    assert updates[0]["arrival_delay"] == -120
+    assert updates[0]["arrival_time"] == BASE + parse_gtfs_time("08:10:00") - 120
+    # The vehicle holds at the next stop, so it leaves and runs on schedule.
+    assert updates[0]["departure_delay"] == 0
+    assert updates[0]["departure_time"] == BASE + parse_gtfs_time("08:11:00")
+    assert updates[1]["arrival_delay"] == 0
+    assert updates[1]["arrival_time"] == BASE + parse_gtfs_time("08:20:00")
