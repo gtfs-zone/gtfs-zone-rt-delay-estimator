@@ -28,7 +28,13 @@ polyline to measure the vehicle's delay against the schedule, and writes a Trip 
 The prediction covers **every stop from the one ahead to the end of the trip**, each with an absolute
 epoch arrival/departure time as well as a delay. The vehicle is assumed to hold its current lateness for
 the rest of the trip; without dwell or running-time estimates that constant-delay model is the only
-honest one available. The absolute times are the point: a consumer cannot order a trip's stops from
+honest one available. Lateness carries forward, earliness does not: an early vehicle keeps it only
+for its arrival at the next stop and is assumed to hold there, so everything after uses a delay of 0.
+A vehicle on the first segment is held at the origin (delay 0 before its scheduled departure, its
+lateness after) until it is `DEPART_DIST` (200 m) from the origin and that much closer to the next
+stop, so a layover in a terminal lot never reads as an early departure. A position's `speed` and
+`bearing`, when present and pointing at the next stop, shorten that distance to `DEPART_DIST_MOVING`
+(75 m). The absolute times are the point: a consumer cannot order a trip's stops from
 delays alone, so an untimed update says nothing about where the vehicle is, and vehicles from the
 Traccar path carry no `current_stop_sequence` or `stop_id` for it to fall back on.
 

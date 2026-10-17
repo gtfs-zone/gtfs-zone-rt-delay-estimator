@@ -135,7 +135,14 @@ async def process_position(redis: aioredis.Redis, record: dict) -> None:
     fix_epoch = int(timestamp)
     base = service_day_base(fix_epoch, ZoneInfo(tz_name), stop_times)
 
-    progress = compute_progress(lat, lon, fix_epoch - base, stop_times)
+    progress = compute_progress(
+        lat,
+        lon,
+        fix_epoch - base,
+        stop_times,
+        record.get("bearing"),
+        record.get("speed"),
+    )
     if progress is None:
         return
     delay, next_index, stops = progress
