@@ -11,3 +11,6 @@ __pycache__/
 dist/
 *.egg-info/
 
+
+# replay_tides.py output
+out/

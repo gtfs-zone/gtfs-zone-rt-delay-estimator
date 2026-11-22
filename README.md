@@ -147,6 +147,30 @@ file path and exits non-zero.
 2. Register it in `PREDICTORS` in `predictors/__init__.py`.
 3. Check its accuracy offline with `scripts/replay_tides.py` before selecting it in the config.
 
+### Checking accuracy offline
+
+`scripts/replay_tides.py` runs a method over archived TIDES packages from
+[rt-archive](https://rt-archive.gtfs.zone) and writes packages whose `stop_time_predictions` are what
+the method would have predicted live (producer `estimator-<method>`, params and `params_hash` in
+`datapackage.json`):
+
+```sh
+uv run scripts/replay_tides.py --feed columbia-county --date 2026-10-12..2026-11-20 \
+  --method gps --params '{"depart_dist": 150}' --out out/
+```
+
+Upload a replayed package with its GTFS zip at accuracy.rt.gtfs.zone, or score the recorded and
+replayed packages together with rt-accuracy's scorer from a gtfs-zone-rt-accuracy checkout:
+
+```sh
+SCORE_OUT=../gtfs-zone-rt-delay-estimator/out SCORE_FEED=columbia-county SCORE_PRODUCER=estimator-gps \
+  node_modules/.bin/vitest run --globals --silent=false \
+  --root ../gtfs-zone-rt-delay-estimator/scripts score_replay
+```
+
+It prints MAE, p90 and bias in minutes by horizon and route, head to head with the recorded
+producer and rt-accuracy's baselines.
+
 ---
 
 ## Running
