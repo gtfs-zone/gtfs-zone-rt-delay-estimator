@@ -14,3 +14,4 @@ dist/
 
 # replay_tides.py output
 out/
+node_modules/
