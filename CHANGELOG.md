@@ -1,3 +1,15 @@
+## v0.4.0 (2026-11-22)
+
+### Feat
+
+- **scripts**: replay TIDES packages through a prediction method
+- pluggable prediction methods chosen per feed or tracker
+
+### Fix
+
+- **scripts**: give the replay scorer a 10 min test timeout
+- **deps**: upgrade packages with published security advisories
+
 ## v0.3.1 (2026-10-17)
 
 ## v0.3.0 (2026-10-17)
