@@ -21,9 +21,9 @@ rt-pollers ───────────┘        │
 
 Positions are already in Redis: rt-traccar-receiver writes them for the Traccar path, and rt-api's
 `/ingest/position` writes them for rt-pollers. This worker sweeps those `vehicle:*` keys, and for
-each new fix it loads the trip's scheduled stop times from PostgreSQL, projects the fix onto the stop
-polyline to measure the vehicle's delay against the schedule, and writes a Trip Update to Redis with a
-300-second TTL.
+each new fix it looks up the tracker's feed, loads the trip's scheduled stop times from that feed's
+current schedule in PostgreSQL, runs the prediction method configured for the tracker, and writes a
+Trip Update to Redis with a 300-second TTL. The default method, `gps`, is described below.
 
 The prediction covers **every stop from the one ahead to the end of the trip**, each with an absolute
 epoch arrival/departure time as well as a delay. The vehicle is assumed to hold its current lateness for
@@ -77,14 +77,18 @@ the tracker's `nickname`.
   ],
   "delay": 42,
   "stop_sequence": 5,
-  "source": "rt-delay-estimator"
+  "source": "rt-delay-estimator",
+  "method": "gps",
+  "params_hash": "1a2b3c4d"
 }
 ```
 
 `stop_time_updates` is the payload, one entry per stop from the one ahead to the end of the trip, with
 absolute epoch times. Its field names match rt-api's ingest contract, the same one rt-pollers
 writes. Top-level `delay` and `stop_sequence` duplicate the head of that list; they are advisory, kept
-so a `redis-cli GET` stays readable, and rt-api reads the list whenever it is non-empty.
+so a `redis-cli GET` stays readable, and rt-api reads the list whenever it is non-empty. `method` and
+`params_hash` (the first 8 hex chars of the sha256 of the params' canonical JSON) say which
+prediction method produced the record and with which params.
 
 `delay` is in seconds (positive = late, negative = early). `tracker_id` is the device's **secret**
 credential, held for internal reference only. It is never published. rt-api labels the vehicle in the
@@ -100,8 +104,48 @@ public feed by the producer's `vehicle_id` if the position record carried one, e
 | `REDIS_URL` | `redis://redis:6379/1` | Redis connection URL including DB number |
 | `DATABASE_URL` | `postgresql+psycopg2://.../postgres` | PostgreSQL connection URL |
 | `POLL_INTERVAL` | `5` | Seconds between sweeps of the `vehicle:*` keyspace (default `5`) |
+| `PREDICTORS_CONFIG` | `/config/predictors.yaml` | YAML file choosing the prediction method per feed or tracker (optional) |
 
 `REDIS_URL` and `DATABASE_URL` are required. The worker exits with `KeyError` if either is missing.
+
+---
+
+## Prediction methods
+
+`PREDICTORS_CONFIG` names a YAML file. Without it, or if the file does not exist, every tracker uses
+`gps` at its default params, which is the behavior described above.
+
+```yaml
+# Used by every tracker not matched below.
+default:
+  method: gps
+# Keyed by feed name.
+feeds:
+  columbia-county:
+    method: gps
+    params: {depart_dist: 200}
+# Keyed by "<feed name>/<tracker nickname>". Wins over the feed's entry.
+trackers:
+  columbia-county/bus-1:
+    method: gps
+    params: {floor_early: false}
+```
+
+Every entry is validated at startup: an unknown method, an unknown param or a bad value logs the
+file path and exits non-zero.
+
+| Method | Params (default) |
+|---|---|
+| `gps` | `depart_dist` (200), `depart_dist_moving` (75), `moving_speed` (2.0 m/s), `heading_tolerance` (45 degrees), `floor_early` (true) |
+
+### Adding a method
+
+1. Add a module under `src/gtfs_zone_rt_delay_estimator/predictors/` with a `PredictorParams`
+   subclass and a class with `name`, `Params` and `predict(inp, params)`. A method gets everything
+   through `PredictorInput` (the fix, the trip's stops, the service day base, recent fixes on the
+   trip) and must not touch the database or Redis.
+2. Register it in `PREDICTORS` in `predictors/__init__.py`.
+3. Check its accuracy offline with `scripts/replay_tides.py` before selecting it in the config.
 
 ---
 

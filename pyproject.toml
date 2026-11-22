@@ -12,6 +12,8 @@ dependencies = [
     "gtfs-zone-db-models",
     "tzdata>=2026.4",
     "sqlalchemy>=2",
+    "pydantic>=2.12",
+    "pyyaml>=6.0",
 ]
 
 [tool.uv.sources]

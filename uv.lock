@@ -271,6 +271,8 @@ source = { editable = "." }
 dependencies = [
     { name = "gtfs-zone-db-models" },
     { name = "psycopg2-binary" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "redis", extra = ["hiredis"] },
     { name = "shapely" },
     { name = "sqlalchemy" },
@@ -291,6 +293,8 @@ dev = [
 requires-dist = [
     { name = "gtfs-zone-db-models", git = "https://github.com/gtfs-zone/gtfs-zone-db-models.git?tag=v0.2.0" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
+    { name = "pydantic", specifier = ">=2.12" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "redis", extras = ["hiredis"], specifier = ">=5.2" },
     { name = "shapely", specifier = ">=2.1.2" },
     { name = "sqlalchemy", specifier = ">=2" },

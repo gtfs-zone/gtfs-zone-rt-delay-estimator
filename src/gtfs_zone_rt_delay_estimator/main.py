@@ -2,31 +2,31 @@ import asyncio
 import json
 import logging
 import os
+import sys
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 from gtfs_zone_db_models.models import (
+    Feed,
     GtfsStaticFeed,
     GtfsStop,
     GtfsStopTime,
+    Tracker,
 )
 from gtfs_zone_db_models.vehicle_keys import trip_update_key
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 from sqlmodel import Session, select
 
-from gtfs_zone_rt_delay_estimator.trip_math import (
-    build_stop_time_updates,
-    compute_progress,
-    service_day_base,
-)
+from gtfs_zone_rt_delay_estimator import config
+from gtfs_zone_rt_delay_estimator.cache import TTLCache
+from gtfs_zone_rt_delay_estimator.predictors import Fix, PredictorInput
+from gtfs_zone_rt_delay_estimator.trip_math import service_day_base
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
-
-REDIS_URL = os.environ["REDIS_URL"]
-DATABASE_URL = os.environ["DATABASE_URL"]
-# How often to sweep the live vehicle:* positions for new fixes.
-POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 
 # Match rt-api's ingest TRIP_UPDATE_TTL so stale predictions expire together.
 TRIP_UPDATE_TTL = 300
@@ -35,18 +35,55 @@ TRIP_UPDATE_TTL = 300
 # trip_update (e.g. rt-pollers's per-stop prediction), only our own.
 SOURCE = "rt-delay-estimator"
 
-_engine = create_engine(DATABASE_URL)
+# How long a tracker's feed, and a trip's stop times, are reused before being
+# read again, so a new tracker or a reloaded schedule is picked up.
+TRACKER_TTL = 300
+STOP_TIMES_TTL = 600
+
+# How far back the per-trip fix history passed to a predictor reaches.
+HISTORY_WINDOW = 600
 
 
-def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
-    """Load the scheduled stop_times (with coords) and feed timezone for a trip.
+@dataclass(frozen=True)
+class TrackerInfo:
+    """What a tracker id resolves to: its feed and that feed's current schedule."""
 
-    Unlike the old OwnTracks/HTTP shim, the position record already carries the
-    resolved ``trip_id`` (rt-traccar-receiver resolves it from the schedule; rt-pollers
-    supplies it directly), so there is nothing to resolve here. We only fetch the
-    schedule needed to project the fix onto the route and compute the delay.
+    feed_name: str
+    nickname: str
+    gtfs_static_feed_id: int | None
+    timezone: str | None
+
+
+def load_tracker(engine: Engine, tracker_id: str) -> TrackerInfo | None:
+    """The tracker's feed and the static feed that feed currently serves."""
+    with Session(engine) as session:
+        row = session.execute(
+            select(
+                Feed.feed_name,
+                Tracker.nickname,
+                Feed.gtfs_static_feed_id,
+                GtfsStaticFeed.timezone,
+            )
+            .join(Feed, Feed.id == Tracker.feed_id)
+            .outerjoin(GtfsStaticFeed, GtfsStaticFeed.id == Feed.gtfs_static_feed_id)
+            .where(Tracker.id == tracker_id)
+        ).first()
+    if row is None:
+        return None
+    return TrackerInfo(
+        feed_name=row.feed_name,
+        nickname=row.nickname,
+        gtfs_static_feed_id=row.gtfs_static_feed_id,
+        timezone=row.timezone,
+    )
+
+
+def load_stop_times(engine: Engine, static_feed_id: int, trip_id: str) -> list[dict]:
+    """The trip's scheduled stop_times with coordinates, sorted by stop_sequence.
+
+    Scoped to one static feed, so two feeds sharing a trip_id never mix stops.
     """
-    with Session(_engine) as session:
+    with Session(engine) as session:
         rows = session.execute(
             select(
                 GtfsStopTime.stop_id,
@@ -55,17 +92,17 @@ def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
                 GtfsStopTime.stop_sequence,
                 GtfsStop.stop_lat,
                 GtfsStop.stop_lon,
-                GtfsStaticFeed.timezone,
             )
             .join(
                 GtfsStop,
                 (GtfsStop.gtfs_static_feed_id == GtfsStopTime.gtfs_static_feed_id)
                 & (GtfsStop.stop_id == GtfsStopTime.stop_id),
             )
-            .join(GtfsStaticFeed, GtfsStaticFeed.id == GtfsStopTime.gtfs_static_feed_id)
-            .where(GtfsStopTime.trip_id == trip_id)
+            .where(
+                GtfsStopTime.gtfs_static_feed_id == static_feed_id,
+                GtfsStopTime.trip_id == trip_id,
+            )
         ).all()
-
     stop_times = [
         {
             "trip_id": trip_id,
@@ -78,8 +115,7 @@ def load_stop_times(trip_id: str) -> tuple[list[dict], str | None]:
         }
         for row in rows
     ]
-    timezone = rows[0].timezone if rows else None
-    return stop_times, timezone
+    return sorted(stop_times, key=lambda s: s["stop_sequence"])
 
 
 async def _should_write(redis: aioredis.Redis, key: str) -> bool:
@@ -100,103 +136,175 @@ async def _should_write(redis: aioredis.Redis, key: str) -> bool:
     return data.get("source") == SOURCE
 
 
-async def process_position(redis: aioredis.Redis, record: dict) -> None:
-    trip_id = record.get("trip_id")
-    tracker_id = record.get("tracker_id")
-    lat = record.get("lat")
-    lon = record.get("lon")
-    timestamp = record.get("timestamp")
-    if not trip_id or lat is None or lon is None or timestamp is None:
-        return
-    # The key is tracker-scoped, so a record without one cannot be written
-    # anywhere a reader would look for it.
-    if not tracker_id:
-        log.warning("Position for trip_id=%s has no tracker_id; skipped", trip_id)
-        return
+class Estimator:
+    """Turns position records into trip updates with the configured methods.
 
-    # Check ownership before doing any work. Both halves of the key come
-    # straight off the record, so this costs one Redis GET and saves a Postgres
-    # round-trip per position we were only going to discard, the common case
-    # for a producer like rt-pollers, whose ~53 concurrent Amtrak vehicles
-    # all share one credential and already own their trip_update keys.
-    key = trip_update_key(tracker_id, trip_id, record.get("start_date"))
-    if not await _should_write(redis, key):
-        return
+    The tracker and stop-time loaders are plain callables so tests can stub
+    them; they run in a worker thread.
+    """
 
-    stop_times, tz_name = await asyncio.to_thread(load_stop_times, trip_id)
-    if not stop_times:
-        return
-    if tz_name is None:
-        log.warning("No timezone for trip_id=%s", trip_id)
-        return
+    def __init__(
+        self,
+        predictors: config.Predictors,
+        tracker_loader: Callable[[str], TrackerInfo | None],
+        stop_times_loader: Callable[[int, str], list[dict]],
+    ) -> None:
+        self.predictors = predictors
+        self._tracker_loader = tracker_loader
+        self._stop_times_loader = stop_times_loader
+        self._trackers: TTLCache[str, TrackerInfo | None] = TTLCache(TRACKER_TTL)
+        self._stop_times: TTLCache[tuple[int, str], list[dict]] = TTLCache(
+            STOP_TIMES_TTL
+        )
+        # Earlier fixes per trip_update key, oldest first.
+        self._history: dict[str, deque[Fix]] = {}
 
-    # GTFS schedule times are offsets from the *service day's* midnight and may
-    # run past 24:00, so the fix's own calendar date is not always the right base.
-    fix_epoch = int(timestamp)
-    base = service_day_base(fix_epoch, ZoneInfo(tz_name), stop_times)
+    async def _tracker(self, tracker_id: str) -> TrackerInfo | None:
+        return await asyncio.to_thread(
+            self._trackers.get_or_load,
+            tracker_id,
+            lambda: self._tracker_loader(tracker_id),
+        )
 
-    progress = compute_progress(
-        lat,
-        lon,
-        fix_epoch - base,
-        stop_times,
-        record.get("bearing"),
-        record.get("speed"),
-    )
-    if progress is None:
-        return
-    delay, next_index, stops = progress
-    stop_sequence = stops[next_index]["stop_sequence"]
+    async def _stops(self, static_feed_id: int, trip_id: str) -> list[dict]:
+        return await asyncio.to_thread(
+            self._stop_times.get_or_load,
+            (static_feed_id, trip_id),
+            lambda: self._stop_times_loader(static_feed_id, trip_id),
+        )
 
-    # A per-stop prediction list with absolute times, not a bare delay: a consumer
-    # cannot order a trip's stops from delays alone, so an untimed update tells it
-    # nothing about where the vehicle is.
-    stop_time_updates = build_stop_time_updates(stops, next_index, base, delay)
+    def _push_history(self, key: str, fix: Fix) -> tuple[Fix, ...]:
+        """Record `fix` and return the fixes before it inside the window."""
+        fixes = self._history.setdefault(key, deque())
+        while fixes and fixes[0].timestamp < fix.timestamp - HISTORY_WINDOW:
+            fixes.popleft()
+        earlier = tuple(f for f in fixes if f.timestamp < fix.timestamp)
+        if not fixes or fixes[-1].timestamp < fix.timestamp:
+            fixes.append(fix)
+        return earlier
 
-    log.info(
-        "trip_id=%s delay=%ds seq=%s stops=%d",
-        trip_id,
-        delay,
-        stop_sequence,
-        len(stop_time_updates),
-    )
-    payload = {
-        "trip_id": trip_id,
-        # The secret credential, under its own name, never the vehicle id.
-        # rt-api publishes a trip update's `vehicle_id` verbatim as the GTFS
-        # VehicleDescriptor.id, so writing the tracker id there would both leak
-        # the credential and collapse every trip we own onto one id.
-        "tracker_id": tracker_id,
-        "timestamp": fix_epoch,
-        "stop_time_updates": stop_time_updates,
-        # Advisory duplicates of the head of the prediction list. rt-api reads
-        # stop_time_updates whenever it is non-empty, so these are only for making
-        # a `redis-cli GET trip_update:...` legible, and for the back-compat path
-        # should an old flat record still be live under its TTL.
-        "delay": delay,
-        "stop_sequence": stop_sequence,
-        "source": SOURCE,
-    }
-    # Carry the position record's public identity across so the trip update
-    # names the same vehicle its position does. Omit rather than write None: an
-    # absent key is what tells rt-api to fall back to the tracker nickname,
-    # which is right for single-device producers (rt-traccar-receiver sets neither).
-    for field in ("vehicle_id", "vehicle_label"):
-        if record.get(field):
-            payload[field] = record[field]
+    def prune_history(self, now: int) -> None:
+        """Drop trips whose latest fix is older than the window."""
+        stale = [
+            k
+            for k, fixes in self._history.items()
+            if not fixes or fixes[-1].timestamp < now - HISTORY_WINDOW
+        ]
+        for k in stale:
+            del self._history[k]
 
-    await redis.setex(key, TRIP_UPDATE_TTL, json.dumps(payload))
+    async def process_position(self, redis: aioredis.Redis, record: dict) -> None:
+        trip_id = record.get("trip_id")
+        tracker_id = record.get("tracker_id")
+        lat = record.get("lat")
+        lon = record.get("lon")
+        timestamp = record.get("timestamp")
+        if not trip_id or lat is None or lon is None or timestamp is None:
+            return
+        # The key is tracker-scoped, so a record without one cannot be written
+        # anywhere a reader would look for it.
+        if not tracker_id:
+            log.warning("Position for trip_id=%s has no tracker_id; skipped", trip_id)
+            return
+
+        # Check ownership before doing any work. Both halves of the key come
+        # straight off the record, so this costs one Redis GET and saves a
+        # Postgres round-trip per position we were only going to discard, the
+        # common case for a producer like rt-pollers, whose ~53 concurrent
+        # Amtrak vehicles all share one credential and already own their
+        # trip_update keys.
+        key = trip_update_key(tracker_id, trip_id, record.get("start_date"))
+        if not await _should_write(redis, key):
+            return
+
+        fix_epoch = int(timestamp)
+        history = self._push_history(key, Fix(fix_epoch, lat, lon))
+
+        tracker = await self._tracker(tracker_id)
+        if tracker is None:
+            log.warning("Unknown tracker for trip_id=%s; skipped", trip_id)
+            return
+        if tracker.gtfs_static_feed_id is None or tracker.timezone is None:
+            log.warning("Feed %s has no loaded schedule", tracker.feed_name)
+            return
+        stop_times = await self._stops(tracker.gtfs_static_feed_id, trip_id)
+        if not stop_times:
+            return
+
+        # GTFS schedule times are offsets from the *service day's* midnight and
+        # may run past 24:00, so the fix's own calendar date is not always the
+        # right base.
+        base = service_day_base(fix_epoch, ZoneInfo(tracker.timezone), stop_times)
+
+        choice = self.predictors.for_tracker(tracker.feed_name, tracker.nickname)
+        prediction = choice.predictor.predict(
+            PredictorInput(
+                lat=lat,
+                lon=lon,
+                timestamp=fix_epoch,
+                stops=stop_times,
+                base_epoch=base,
+                bearing=record.get("bearing"),
+                speed=record.get("speed"),
+                history=history,
+            ),
+            choice.params,
+        )
+        if prediction is None:
+            return
+
+        log.info(
+            "trip_id=%s method=%s delay=%ds seq=%s stops=%d",
+            trip_id,
+            choice.method,
+            prediction.delay,
+            prediction.stop_sequence,
+            len(prediction.stop_time_updates),
+        )
+        payload = {
+            "trip_id": trip_id,
+            # The tracker id under its own name, never the vehicle id. rt-api
+            # publishes a trip update's `vehicle_id` verbatim as the GTFS
+            # VehicleDescriptor.id, so writing the tracker id there would
+            # collapse every trip we own onto one id.
+            "tracker_id": tracker_id,
+            "timestamp": fix_epoch,
+            # Absolute times per stop, not a bare delay: a consumer cannot order
+            # a trip's stops from delays alone.
+            "stop_time_updates": prediction.stop_time_updates,
+            # Advisory duplicates of the head of the prediction list. rt-api
+            # reads stop_time_updates whenever it is non-empty, so these are only
+            # for making a `redis-cli GET trip_update:...` legible.
+            "delay": prediction.delay,
+            "stop_sequence": prediction.stop_sequence,
+            "source": SOURCE,
+            "method": choice.method,
+            "params_hash": choice.params_hash,
+        }
+        # Carry the position record's public identity across so the trip update
+        # names the same vehicle its position does. Omit rather than write None:
+        # an absent key is what tells rt-api to fall back to the tracker
+        # nickname, which is right for single-device producers.
+        for field in ("vehicle_id", "vehicle_label"):
+            if record.get(field):
+                payload[field] = record[field]
+
+        await redis.setex(key, TRIP_UPDATE_TTL, json.dumps(payload))
 
 
-async def run() -> None:
-    redis = aioredis.from_url(REDIS_URL)
-    # Only recompute a key when its fix timestamp advances. This avoids reprocessing
-    # the same position every sweep.
+async def run(estimator: Estimator, redis_url: str, poll_interval: float) -> None:
+    redis = aioredis.from_url(redis_url)
+    # Only recompute a key when its fix timestamp advances. This avoids
+    # reprocessing the same position every sweep.
     seen: dict[str, int] = {}
-    log.info("rt-delay-estimator watching vehicle:* every %.1fs", POLL_INTERVAL)
+    log.info("rt-delay-estimator watching vehicle:* every %.1fs", poll_interval)
     try:
         while True:
+            present: set[str] = set()
+            newest = 0
             async for key in redis.scan_iter("vehicle:*"):
+                key_str = key.decode() if isinstance(key, bytes) else key
+                present.add(key_str)
                 raw = await redis.get(key)
                 if raw is None:
                     continue
@@ -207,21 +315,47 @@ async def run() -> None:
                 ts = record.get("timestamp")
                 if ts is None:
                     continue
-                key_str = key.decode() if isinstance(key, bytes) else key
+                newest = max(newest, int(ts))
                 if seen.get(key_str) == int(ts):
                     continue
                 seen[key_str] = int(ts)
                 try:
-                    await process_position(redis, record)
+                    await estimator.process_position(redis, record)
                 except Exception:
                     log.exception("Failed to process %s", key_str)
-            await asyncio.sleep(POLL_INTERVAL)
+            for gone in seen.keys() - present:
+                del seen[gone]
+            if newest:
+                estimator.prune_history(newest)
+            await asyncio.sleep(poll_interval)
     finally:
         await redis.aclose()
 
 
 def main() -> None:
-    asyncio.run(run())
+    redis_url = os.environ["REDIS_URL"]
+    engine = create_engine(os.environ["DATABASE_URL"])
+    # How often to sweep the live vehicle:* positions for new fixes.
+    poll_interval = float(os.environ.get("POLL_INTERVAL", "5"))
+    config_path = os.environ.get("PREDICTORS_CONFIG")
+    try:
+        predictors = config.load(config_path)
+    except config.ConfigError as e:
+        log.error("Invalid predictors config: %s", e)
+        sys.exit(1)
+    log.info(
+        "Predictors from %s: default=%s feeds=%d trackers=%d",
+        config_path or "(built-in default)",
+        predictors.default.method,
+        len(predictors.feeds),
+        len(predictors.trackers),
+    )
+    estimator = Estimator(
+        predictors,
+        tracker_loader=lambda tracker_id: load_tracker(engine, tracker_id),
+        stop_times_loader=lambda sfid, trip_id: load_stop_times(engine, sfid, trip_id),
+    )
+    asyncio.run(run(estimator, redis_url, poll_interval))
 
 
 if __name__ == "__main__":

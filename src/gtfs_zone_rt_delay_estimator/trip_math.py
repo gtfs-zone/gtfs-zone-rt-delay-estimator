@@ -124,6 +124,11 @@ def has_departed(
     next_stop: dict,
     bearing: float | None = None,
     speed: float | None = None,
+    *,
+    depart_dist: float = DEPART_DIST,
+    depart_dist_moving: float = DEPART_DIST_MOVING,
+    moving_speed: float = MOVING_SPEED,
+    heading_tolerance: float = HEADING_TOLERANCE,
 ) -> bool:
     """Whether a fix on the first segment has really left the origin.
 
@@ -138,11 +143,11 @@ def has_departed(
     away = _metres(lat, lon, o_lat, o_lon)
     progress = leg - _metres(lat, lon, n_lat, n_lon)
 
-    need = min(DEPART_DIST, leg / 2)
-    if bearing is not None and speed is not None and speed >= MOVING_SPEED:
+    need = min(depart_dist, leg / 2)
+    if bearing is not None and speed is not None and speed >= moving_speed:
         off = abs((bearing - _bearing(o_lat, o_lon, n_lat, n_lon) + 180) % 360 - 180)
-        if off <= HEADING_TOLERANCE:
-            need = min(DEPART_DIST_MOVING, need)
+        if off <= heading_tolerance:
+            need = min(depart_dist_moving, need)
     return away >= need and progress >= need
 
 
@@ -187,6 +192,11 @@ def compute_progress(
     trip_stops: list[dict],
     bearing: float | None = None,
     speed: float | None = None,
+    *,
+    depart_dist: float = DEPART_DIST,
+    depart_dist_moving: float = DEPART_DIST_MOVING,
+    moving_speed: float = MOVING_SPEED,
+    heading_tolerance: float = HEADING_TOLERANCE,
 ) -> TripProgress | None:
     """Project a fix onto the trip's stop polyline and measure it against the schedule.
 
@@ -202,7 +212,8 @@ def compute_progress(
     (see `service_day_base`), so it may legitimately exceed 86400.
 
     bearing (degrees) and speed (metres/second) are optional and only shorten the
-    distance needed to count as departed.
+    distance needed to count as departed. The keyword-only thresholds are passed
+    to `has_departed`.
 
     Returns None if there is insufficient data to compute a result.
     """
@@ -230,7 +241,18 @@ def compute_progress(
     if (
         seg_idx == 0
         and not _finishing_loop(seconds_since_midnight, stops)
-        and not has_departed(lat, lon, stop_behind, stop_ahead, bearing, speed)
+        and not has_departed(
+            lat,
+            lon,
+            stop_behind,
+            stop_ahead,
+            bearing,
+            speed,
+            depart_dist=depart_dist,
+            depart_dist_moving=depart_dist_moving,
+            moving_speed=moving_speed,
+            heading_tolerance=heading_tolerance,
+        )
     ):
         late = seconds_since_midnight - parse_gtfs_time(time_behind_str)
         return TripProgress(delay=max(0, round(late)), next_index=0, stops=stops)
@@ -251,6 +273,8 @@ def build_stop_time_updates(
     next_index: int,
     base_epoch: int,
     delay: int,
+    *,
+    floor_early: bool = True,
 ) -> list[dict]:
     """Predictions for every stop from `next_index` onward.
 
@@ -266,11 +290,12 @@ def build_stop_time_updates(
 
     An early vehicle keeps its earliness only for its arrival at the next stop.
     It is assumed to hold there, so that stop's departure and every later stop
-    use the delay floored at 0.
+    use the delay floored at 0. With `floor_early=False` the earliness carries
+    through the whole trip like lateness does.
 
     Field names match rt-api's ingest/serving contract (`_fill_stop_time_update`).
     """
-    held = max(0, delay)
+    held = max(0, delay) if floor_early else delay
     updates: list[dict] = []
     for i, stop in enumerate(stops[next_index:]):
         arrival = stop.get("arrival_time") or stop.get("departure_time")
