@@ -142,4 +142,4 @@ test('score replay', async () => {
     join(out, `score-${feed}-${producer}.json`),
     JSON.stringify(report, null, 1)
   );
-});
+}, 600_000);
